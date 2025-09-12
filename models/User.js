@@ -18,6 +18,19 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Şifre gereklidir'],
     minlength: 6
+  },
+  usageType: {
+    type: String,
+    enum: ['business', 'both'],
+    required: [true, 'Kullanım amacı gereklidir']
+  },
+  companyName: {
+    type: String,
+    trim: true
+  },
+  authorizedPerson: {
+    type: String,
+    trim: true
   }
 }, {
   timestamps: true

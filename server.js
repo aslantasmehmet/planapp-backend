@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
+const Appointment = require('./models/Appointment');
 require('dotenv').config();
 
 const app = express();
@@ -49,11 +50,16 @@ app.get('/api/health', (req, res) => {
 // Kayıt olma
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { email, password, name, usageType, companyName, authorizedPerson } = req.body;
 
     // Validasyon
-    if (!email || !password || !name) {
+    if (!email || !password || !name || !usageType) {
       return res.status(400).json({ error: 'Tüm alanlar gereklidir' });
+    }
+
+    // İş yeri seçimi için ek validasyon
+    if (usageType === 'business' && (!companyName || !authorizedPerson)) {
+      return res.status(400).json({ error: 'İş yeri kullanımı için şirket adı ve yetkili kişi bilgisi gereklidir' });
     }
 
     // Kullanıcı zaten var mı kontrol et
@@ -63,7 +69,13 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Yeni kullanıcı oluştur
-    const user = new User({ name, email, password });
+    const userData = { name, email, password, usageType };
+    if (usageType === 'business') {
+      userData.companyName = companyName;
+      userData.authorizedPerson = authorizedPerson;
+    }
+    
+    const user = new User(userData);
     await user.save();
 
     // JWT token oluştur
@@ -79,7 +91,10 @@ app.post('/api/auth/register', async (req, res) => {
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
+        usageType: user.usageType,
+        companyName: user.companyName,
+        authorizedPerson: user.authorizedPerson
       }
     });
   } catch (error) {
@@ -123,7 +138,10 @@ app.post('/api/auth/login', async (req, res) => {
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
+        usageType: user.usageType,
+        companyName: user.companyName,
+        authorizedPerson: user.authorizedPerson
       }
     });
   } catch (error) {
@@ -152,6 +170,156 @@ app.get('/api/plans', authenticateToken, (req, res) => {
     message: 'Planlar başarıyla alındı',
     plans: ['Plan 1', 'Plan 2', 'Plan 3']
   });
+});
+
+// RANDEVU ENDPOINT'LERİ
+
+// Tüm randevuları getir
+app.get('/api/appointments', authenticateToken, async (req, res) => {
+  try {
+    const appointments = await Appointment.find({ userId: req.user.userId })
+      .sort({ date: 1, startTime: 1 });
+    res.json({ appointments });
+  } catch (error) {
+    console.error('Randevuları getirme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Yeni randevu oluştur
+app.post('/api/appointments', authenticateToken, async (req, res) => {
+  try {
+    const appointmentData = {
+      ...req.body,
+      userId: req.user.userId
+    };
+    
+    const appointment = new Appointment(appointmentData);
+    await appointment.save();
+    
+    res.status(201).json({
+      message: 'Randevu başarıyla oluşturuldu',
+      appointment
+    });
+  } catch (error) {
+    console.error('Randevu oluşturma hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Randevu güncelle
+app.put('/api/appointments/:id', authenticateToken, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.userId },
+      req.body,
+      { new: true }
+    );
+    
+    if (!appointment) {
+      return res.status(404).json({ error: 'Randevu bulunamadı' });
+    }
+    
+    res.json({
+      message: 'Randevu başarıyla güncellendi',
+      appointment
+    });
+  } catch (error) {
+    console.error('Randevu güncelleme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Randevu sil
+app.delete('/api/appointments/:id', authenticateToken, async (req, res) => {
+  try {
+    const appointment = await Appointment.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user.userId
+    });
+    
+    if (!appointment) {
+      return res.status(404).json({ error: 'Randevu bulunamadı' });
+    }
+    
+    res.json({ message: 'Randevu başarıyla silindi' });
+  } catch (error) {
+    console.error('Randevu silme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Bugünkü randevuları getir
+app.get('/api/appointments/today', authenticateToken, async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    const appointments = await Appointment.find({
+      userId: req.user.userId,
+      date: {
+        $gte: today,
+        $lt: tomorrow
+      }
+    }).sort({ startTime: 1 });
+    
+    res.json({ appointments });
+  } catch (error) {
+    console.error('Bugünkü randevuları getirme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// İstatistikleri getir
+app.get('/api/statistics', authenticateToken, async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Bugünkü randevular
+    const todayAppointments = await Appointment.countDocuments({
+      userId: req.user.userId,
+      date: {
+        $gte: today,
+        $lt: tomorrow
+      }
+    });
+    
+    // Bu haftaki randevular
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay());
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 7);
+    
+    const weeklyAppointments = await Appointment.countDocuments({
+      userId: req.user.userId,
+      date: {
+        $gte: startOfWeek,
+        $lt: endOfWeek
+      }
+    });
+    
+    // Tamamlanan randevular
+    const completedAppointments = await Appointment.countDocuments({
+      userId: req.user.userId,
+      status: 'completed'
+    });
+    
+    res.json({
+      statistics: {
+        todayAppointments,
+        weeklyPlans: weeklyAppointments,
+        completedTasks: completedAppointments
+      }
+    });
+  } catch (error) {
+    console.error('İstatistik hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
 });
 
 app.listen(PORT, () => {
