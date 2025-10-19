@@ -45,11 +45,25 @@ const appointmentSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  serviceId: {
+    type: String,
+    trim: true
+  },
   notes: {
     type: String,
     trim: true
   },
   userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  businessId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Business',
+    required: true
+  },
+  createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
@@ -73,5 +87,7 @@ appointmentSchema.pre('save', function(next) {
 // Index for better query performance
 appointmentSchema.index({ userId: 1, date: 1 });
 appointmentSchema.index({ userId: 1, status: 1 });
+appointmentSchema.index({ businessId: 1, date: 1 });
+appointmentSchema.index({ businessId: 1, status: 1 });
 
 module.exports = mongoose.model('Appointment', appointmentSchema);
