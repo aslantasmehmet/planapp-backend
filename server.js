@@ -9,6 +9,8 @@ const fs = require('fs');
 const User = require('./models/User');
 const Appointment = require('./models/Appointment');
 const Business = require('./models/Business');
+const BlockedTime = require('./models/BlockedTime');
+const AppointmentRequest = require('./models/AppointmentRequest');
 require('dotenv').config();
 
 const app = express();
@@ -63,6 +65,88 @@ app.get('/api/health', (req, res) => {
   } catch (error) {
     console.error('Health endpoint hatası:', error);
     res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Müsait olmayan saatler için API endpoint'leri
+// Müsait olmayan saat ekle
+app.post('/api/blocked-times', authenticateToken, async (req, res) => {
+  try {
+    const { date, startTime, endTime, reason } = req.body;
+    
+    if (!date || !startTime || !endTime) {
+      return res.status(400).json({ error: 'Tarih, başlangıç ve bitiş saati gereklidir' });
+    }
+    
+    const blockedTime = new BlockedTime({
+      userId: req.user.userId,
+      businessId: req.user.businessId,
+      date,
+      startTime,
+      endTime,
+      reason: reason || 'Müsait değil'
+    });
+    
+    await blockedTime.save();
+    res.status(201).json(blockedTime);
+  } catch (error) {
+    console.error('Müsait olmayan saat ekleme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası', details: error.message });
+  }
+});
+
+// Müsait olmayan saatleri getir
+app.get('/api/blocked-times', authenticateToken, async (req, res) => {
+  try {
+    const { date, userId } = req.query;
+    
+    const query = {
+      businessId: req.user.businessId
+    };
+    
+    if (date) {
+      // Tarih filtreleme
+      const startDate = new Date(date);
+      startDate.setHours(0, 0, 0, 0);
+      
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+      
+      query.date = { $gte: startDate, $lte: endDate };
+    }
+    
+    if (userId) {
+      query.userId = userId;
+    }
+    
+    const blockedTimes = await BlockedTime.find(query).sort({ date: 1, startTime: 1 });
+    res.json(blockedTimes);
+  } catch (error) {
+    console.error('Müsait olmayan saatleri getirme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası', details: error.message });
+  }
+});
+
+// Müsait olmayan saati sil
+app.delete('/api/blocked-times/:id', authenticateToken, async (req, res) => {
+  try {
+    const blockedTime = await BlockedTime.findById(req.params.id);
+    
+    if (!blockedTime) {
+      return res.status(404).json({ error: 'Müsait olmayan saat bulunamadı' });
+    }
+    
+    // Yetki kontrolü
+    if (blockedTime.userId.toString() !== req.user.userId && 
+        blockedTime.businessId.toString() !== req.user.businessId) {
+      return res.status(403).json({ error: 'Bu işlem için yetkiniz yok' });
+    }
+    
+    await BlockedTime.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Müsait olmayan saat başarıyla silindi' });
+  } catch (error) {
+    console.error('Müsait olmayan saat silme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası', details: error.message });
   }
 });
 
@@ -212,7 +296,7 @@ app.get('/api/plans', authenticateToken, (req, res) => {
 
 
 
-// Debug endpoint - randevu verilerini kontrol et
+
 // RANDEVU ENDPOINT'LERİ
 
 // Randevu durumlarını otomatik güncelle
@@ -257,17 +341,11 @@ const updateAppointmentStatuses = async (appointments) => {
 // Tüm randevuları getir
 app.get('/api/appointments', authenticateToken, async (req, res) => {
   try {
-    console.log('🔥 APPOINTMENTS: Endpoint çağrıldı');
-    console.log('🔥 APPOINTMENTS: User ID:', req.user.userId);
-    console.log('🔥 APPOINTMENTS: Query params:', req.query);
-    
     // Kullanıcının businessId'sini al
     const user = await User.findById(req.user.userId);
     if (!user || !user.businessId) {
       return res.status(400).json({ error: 'Kullanıcının işletme bilgisi bulunamadı' });
     }
-
-    console.log('🔥 APPOINTMENTS: User found:', user.userType, user.businessId);
 
     // Kullanıcı tipine göre filtreleme
     let query = { businessId: user.businessId };
@@ -293,16 +371,11 @@ app.get('/api/appointments', authenticateToken, async (req, res) => {
       // staffId ve serviceId yoksa veya 'all' ise tüm randevuları göster (businessId filtrelemesi yeterli)
     }
     
-    console.log('🔥 APPOINTMENTS: Final query:', query);
-    
     // Randevuları getir ve createdBy alanını populate et
     let appointments = await Appointment.find(query)
       .populate('createdBy', 'name email userType')
       .populate('userId', 'name email userType')
       .sort({ date: 1, startTime: 1 });
-    
-    console.log('🔥 APPOINTMENTS: Found appointments count:', appointments.length);
-    console.log('🔥 APPOINTMENTS: First appointment:', appointments[0]);
     
     // CreatedBy alanı eksik olan randevuları güncelle
     for (let appointment of appointments) {
@@ -319,8 +392,6 @@ app.get('/api/appointments', authenticateToken, async (req, res) => {
     
     // Durumları otomatik güncelle
     appointments = await updateAppointmentStatuses(appointments);
-    
-    console.log('🔥 APPOINTMENTS: Final appointments count after status update:', appointments.length);
     
     res.json({ appointments });
   } catch (error) {
@@ -355,6 +426,23 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
     let createdById = req.user.userId;
     if (user.userType === 'owner' && req.body.selectedStaff && req.body.selectedStaff !== 'all') {
       createdById = req.body.selectedStaff;
+    }
+
+    // Bloke edilmiş randevu ise gerekli alanları ayarla
+    if (req.body.isBlocked) {
+      // Bloke edilmiş randevular için status alanını 'blocked' olarak ayarla
+      req.body.status = 'blocked';
+      
+      // Eğer title/service belirtilmemişse varsayılan değer ata
+      if (!req.body.title || req.body.title.trim() === '') {
+        req.body.title = 'Bloke Edilmiş Saat';
+      }
+      if (!req.body.service || req.body.service.trim() === '') {
+        req.body.service = 'Bloke Edilmiş Saat';
+      }
+      if (!req.body.type || req.body.type.trim() === '') {
+        req.body.type = 'Bloke Edilmiş Saat';
+      }
     }
 
     const appointmentData = {
@@ -543,28 +631,22 @@ app.post('/api/business', authenticateToken, async (req, res) => {
 // İşletme bilgilerini getir
 app.get('/api/business', authenticateToken, async (req, res) => {
   try {
-    console.log('🔥 BACKEND: Business GET endpoint çağrıldı');
-    console.log('🔥 BACKEND: User ID:', req.user.userId);
     
     // Kullanıcı bilgilerini al
     const user = await User.findById(req.user.userId);
     if (!user) {
-      console.log('❌ BACKEND: Kullanıcı bulunamadı');
       return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
     }
 
-    console.log('🔥 BACKEND: Kullanıcı bulundu:', user.userType);
 
     let business;
     
     if (user.userType === 'owner') {
       // Owner ise kendi işletme bilgilerini getir
       business = await Business.findOne({ ownerId: req.user.userId });
-      console.log('🔥 BACKEND: Owner için işletme aranıyor...');
     } else if (user.userType === 'staff') {
       // Staff ise owner'ın işletme bilgilerini getir
       if (!user.businessId) {
-        console.log('❌ BACKEND: Staff kullanıcısının businessId yok');
         return res.json({
           business: null,
           message: 'Staff kullanıcısının işletme bilgisi bulunamadı'
@@ -573,19 +655,15 @@ app.get('/api/business', authenticateToken, async (req, res) => {
       
       // businessId aslında owner'ın ID'si, bu owner'ın işletme bilgilerini bul
       business = await Business.findOne({ ownerId: user.businessId });
-      console.log('🔥 BACKEND: Staff için işletme aranıyor, businessId:', user.businessId);
     }
     
     if (!business) {
-      console.log('❌ BACKEND: İşletme bulunamadı');
       return res.json({
         business: null,
         message: 'İşletme bilgisi bulunamadı'
       });
     }
 
-    console.log('✅ BACKEND: İşletme bulundu:', business._id);
-    console.log('✅ BACKEND: İşletme resim sayısı:', business.images ? business.images.length : 0);
 
     res.json({
       business: {
@@ -608,44 +686,11 @@ app.get('/api/business', authenticateToken, async (req, res) => {
   }
 });
 
-// Kullanıcıların businessId'lerini güncelle (geçici endpoint)
-app.post('/api/fix-business-ids', authenticateToken, async (req, res) => {
-  try {
-    const { businessId } = req.body;
-    
-    if (businessId) {
-      // Belirli bir businessId ile kullanıcıyı güncelle
-      const user = await User.findByIdAndUpdate(
-        req.user.userId,
-        { businessId: businessId },
-        { new: true }
-      );
-      
-      res.json({ 
-        success: true, 
-        message: 'Kullanıcının businessId\'si güncellendi',
-        user: user
-      });
-    } else {
-      // Tüm owner kullanıcılarını bul ve businessId'lerini güncelle
-      const owners = await User.find({ userType: 'owner', businessId: null });
-      
-      for (const owner of owners) {
-        owner.businessId = owner._id;
-        await owner.save();
-      }
-      
-      res.json({ 
-        success: true, 
-        message: `${owners.length} owner kullanıcısının businessId'si güncellendi`,
-        updatedCount: owners.length
-      });
-    }
-  } catch (error) {
-    console.error('BusinessId güncelleme hatası:', error);
-    res.status(500).json({ error: 'Sunucu hatası' });
-  }
-});
+
+
+
+
+
 
 // İşletme bilgilerini güncelle
 app.put('/api/business', authenticateToken, async (req, res) => {
@@ -692,41 +737,29 @@ app.put('/api/business', authenticateToken, async (req, res) => {
 // İşletme resimlerini güncelle (base64 format)
 app.put('/api/business/images', authenticateToken, async (req, res) => {
   try {
-    console.log('🔥 BACKEND: Business images endpoint çağrıldı');
-    console.log('🔥 BACKEND: User ID:', req.user.userId);
-    console.log('🔥 BACKEND: Request body:', req.body);
     
     const { images } = req.body;
 
     if (!images || !Array.isArray(images)) {
-      console.log('❌ BACKEND: Geçersiz resim verisi');
       return res.status(400).json({ error: 'Geçerli resim verisi gerekli' });
     }
 
     if (images.length > 5) {
-      console.log('❌ BACKEND: Çok fazla resim:', images.length);
       return res.status(400).json({ error: 'Maksimum 5 resim yüklenebilir' });
     }
 
-    console.log('🔥 BACKEND: Resim sayısı:', images.length);
-    console.log('🔥 BACKEND: İlk resimin boyutu:', images[0] ? images[0].length : 'Yok');
 
     const business = await Business.findOne({ ownerId: req.user.userId });
     
     if (!business) {
-      console.log('❌ BACKEND: İşletme bulunamadı');
       return res.status(404).json({ error: 'İşletme bilgisi bulunamadı' });
     }
 
-    console.log('🔥 BACKEND: İşletme bulundu:', business._id);
-    console.log('🔥 BACKEND: Mevcut resim sayısı:', business.images ? business.images.length : 0);
 
     // Base64 resimlerini kaydet
     business.images = images;
     await business.save();
 
-    console.log('✅ BACKEND: Resimler başarıyla kaydedildi');
-    console.log('✅ BACKEND: Kaydedilen resim sayısı:', business.images.length);
 
     res.json({
       success: true,
@@ -765,9 +798,6 @@ app.delete('/api/business/delete-images', authenticateToken, async (req, res) =>
 // Logo yükleme endpoint'i
 app.post('/api/business/upload-logo', authenticateToken, async (req, res) => {
   try {
-    console.log('🔥 BACKEND: Logo yükleme isteği alındı');
-    console.log('🔥 BACKEND: User ID:', req.user.userId);
-    console.log('🔥 BACKEND: Request body:', req.body);
 
     if (!req.body.logo) {
       return res.status(400).json({ error: 'Logo verisi gönderilmedi' });
@@ -783,7 +813,6 @@ app.post('/api/business/upload-logo', authenticateToken, async (req, res) => {
     business.logo = req.body.logo;
     await business.save();
 
-    console.log('✅ BACKEND: Logo başarıyla yüklendi ve base64 olarak kaydedildi');
 
     res.json({
       success: true,
@@ -811,8 +840,6 @@ app.post('/api/business/upload-logo', authenticateToken, async (req, res) => {
 // Logo silme endpoint'i
 app.delete('/api/business/delete-logo', authenticateToken, async (req, res) => {
   try {
-    console.log('🔥 BACKEND: Logo silme isteği alındı');
-    console.log('🔥 BACKEND: User ID:', req.user.userId);
 
     // Kullanıcının business kaydını bul
     const business = await Business.findOne({ ownerId: req.user.userId });
@@ -825,7 +852,6 @@ app.delete('/api/business/delete-logo', authenticateToken, async (req, res) => {
       const logoPath = path.join(__dirname, 'uploads', path.basename(business.logo));
       if (fs.existsSync(logoPath)) {
         fs.unlinkSync(logoPath);
-        console.log('🔥 BACKEND: Logo dosyası silindi:', logoPath);
       }
     }
 
@@ -833,7 +859,6 @@ app.delete('/api/business/delete-logo', authenticateToken, async (req, res) => {
     business.logo = '';
     await business.save();
 
-    console.log('✅ BACKEND: Logo başarıyla silindi');
 
     res.json({
       success: true,
@@ -1178,6 +1203,130 @@ app.get('/api/services/staff/:staffId', authenticateToken, async (req, res) => {
   }
 });
 
+// Personele hizmet ekleme endpoint'i
+app.post('/api/staff/:staffId/services', authenticateToken, async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const { serviceData } = req.body;
+    const ownerId = req.user.userId;
+
+    // Owner kontrolü
+    const owner = await User.findById(ownerId);
+    if (!owner || owner.userType !== 'owner') {
+      return res.status(403).json({ error: 'Sadece işletme sahipleri personele hizmet ekleyebilir' });
+    }
+
+    // Hizmet verisi kontrolü
+    if (!serviceData || !serviceData.name) {
+      return res.status(400).json({ error: 'Hizmet adı gereklidir' });
+    }
+
+    // Staff'ı bul ve yetki kontrolü yap
+    const staff = await User.findOne({
+      _id: staffId,
+      userType: 'staff',
+      createdBy: ownerId
+    });
+
+    if (!staff) {
+      return res.status(404).json({ error: 'Personel bulunamadı veya yetkiniz yok' });
+    }
+
+    const currentServices = staff.services || [];
+    
+    // Hizmet zaten var mı kontrol et
+    const existingService = currentServices.find(s => 
+      (typeof s === 'string' ? s : s.name) === serviceData.name.trim()
+    );
+    
+    if (existingService) {
+      return res.status(400).json({ error: 'Bu hizmet bu personel için zaten mevcut' });
+    }
+
+    // Yeni hizmet objesi oluştur
+    const newService = {
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+      name: serviceData.name.trim(),
+      description: serviceData.description || '',
+      duration: Number(serviceData.duration) || 0,
+      price: Number(serviceData.price) || 0,
+      images: serviceData.images || [],
+      showInStore: serviceData.showInStore !== undefined ? serviceData.showInStore : true,
+      createdAt: new Date()
+    };
+
+    // Yeni hizmeti personele ekle
+    const updatedServices = [...currentServices, newService];
+    
+    await User.findByIdAndUpdate(
+      staffId,
+      { services: updatedServices },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Hizmet personele başarıyla eklendi',
+      service: newService,
+      services: updatedServices
+    });
+  } catch (error) {
+    console.error('Personele hizmet ekleme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Personelden hizmet silme endpoint'i
+app.delete('/api/staff/:staffId/services/:serviceId', authenticateToken, async (req, res) => {
+  try {
+    const { staffId, serviceId } = req.params;
+    const ownerId = req.user.userId;
+
+    // Owner kontrolü
+    const owner = await User.findById(ownerId);
+    if (!owner || owner.userType !== 'owner') {
+      return res.status(403).json({ error: 'Sadece işletme sahipleri personel hizmetlerini silebilir' });
+    }
+
+    // Staff'ı bul ve yetki kontrolü yap
+    const staff = await User.findOne({
+      _id: staffId,
+      userType: 'staff',
+      createdBy: ownerId
+    });
+
+    if (!staff) {
+      return res.status(404).json({ error: 'Personel bulunamadı veya yetkiniz yok' });
+    }
+
+    const currentServices = staff.services || [];
+    
+    // Hizmeti bul ve sil
+    const updatedServices = currentServices.filter(service => 
+      (typeof service === 'string' ? service : service.id) !== serviceId
+    );
+
+    if (updatedServices.length === currentServices.length) {
+      return res.status(404).json({ error: 'Silinecek hizmet bulunamadı' });
+    }
+
+    await User.findByIdAndUpdate(
+      staffId,
+      { services: updatedServices },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Hizmet personelden başarıyla silindi',
+      services: updatedServices
+    });
+  } catch (error) {
+    console.error('Personelden hizmet silme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
 // Services endpoints
 // Hizmetleri getir
 app.get('/api/services', authenticateToken, async (req, res) => {
@@ -1474,37 +1623,26 @@ app.put('/api/services/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { name, description, duration, price, showInStore, storeDescription, storeImages } = req.body;
     
-    console.log('🔥 BACKEND: Service update endpoint çağrıldı');
-    console.log('🔥 BACKEND: Service ID:', id);
-    console.log('🔥 BACKEND: Request body:', req.body);
-    console.log('🔥 BACKEND: showInStore değeri:', showInStore);
     
     const user = await User.findById(req.user.userId);
     const currentServices = user.services || [];
     
-    console.log('🔥 BACKEND: Kullanıcının mevcut hizmet sayısı:', currentServices.length);
-    console.log('🔥 BACKEND: Aranan service ID:', id);
-    console.log('🔥 BACKEND: Mevcut services:', currentServices.map(s => ({ id: s._id?.toString(), name: s.name })));
     
     // Güncellenecek hizmeti bul
     const serviceIndex = currentServices.findIndex(s => {
       if (typeof s === 'object' && s !== null) {
         const serviceId = s._id?.toString() || s.id?.toString();
-        console.log('🔥 BACKEND: Karşılaştırma - Service ID:', serviceId, 'Aranan ID:', id);
         return serviceId === id;
       }
       return s === id;
     });
     
-    console.log('🔥 BACKEND: Bulunan service index:', serviceIndex);
     
     if (serviceIndex === -1) {
-      console.log('❌ BACKEND: Hizmet bulunamadı');
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
     }
 
     const currentService = currentServices[serviceIndex];
-    console.log('🔥 BACKEND: Mevcut hizmet:', currentService);
     
     // Eğer sadece store bilgileri güncelleniyorsa, name kontrolü yapma
     if (name && name.trim()) {
@@ -1515,7 +1653,6 @@ app.put('/api/services/:id', authenticateToken, async (req, res) => {
       );
       
       if (existingService) {
-        console.log('❌ BACKEND: Aynı isimde hizmet mevcut');
         return res.status(400).json({ error: 'Bu isimde bir hizmet zaten mevcut' });
       }
     }
@@ -1535,8 +1672,6 @@ app.put('/api/services/:id', authenticateToken, async (req, res) => {
       updatedAt: new Date()
     };
     
-    console.log('🔥 BACKEND: Güncellenmiş hizmet:', updatedService);
-    console.log('🔥 BACKEND: Yeni showInStore değeri:', updatedService.showInStore);
     
     currentServices[serviceIndex] = updatedService;
     
@@ -1546,8 +1681,6 @@ app.put('/api/services/:id', authenticateToken, async (req, res) => {
       { new: true }
     );
     
-    console.log('✅ BACKEND: Service başarıyla güncellendi');
-    console.log('✅ BACKEND: Database\'e kaydedildi');
     
     res.json({
       message: 'Hizmet başarıyla güncellendi',
@@ -1621,17 +1754,13 @@ app.post('/api/services/:serviceId/upload-images', authenticateToken, async (req
     }
 
     // Hizmeti bul - hem id hem _id ile kontrol et
-    console.log('🔍 BACKEND: Aranan service ID:', serviceId);
-    console.log('🔍 BACKEND: User services:', user.services.map(s => ({ id: s.id, _id: s._id, name: s.name })));
     
     const serviceIndex = user.services.findIndex(service => 
       service.id == serviceId || service._id == serviceId || service._id.toString() == serviceId
     );
     
-    console.log('🔍 BACKEND: Bulunan service index:', serviceIndex);
     
     if (serviceIndex === -1) {
-      console.log('❌ BACKEND: Service bulunamadı');
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
     }
 
@@ -1684,17 +1813,13 @@ app.post('/api/services/upload-image', authenticateToken, async (req, res) => {
     }
 
     // Hizmeti bul - hem id hem _id ile kontrol et
-    console.log('🔍 BACKEND DELETE: Aranan service ID:', serviceId);
-    console.log('🔍 BACKEND DELETE: User services:', user.services.map(s => ({ id: s.id, _id: s._id, name: s.name })));
     
     const serviceIndex = user.services.findIndex(service => 
       service.id == serviceId || service._id == serviceId || service._id.toString() == serviceId
     );
     
-    console.log('🔍 BACKEND DELETE: Bulunan service index:', serviceIndex);
     
     if (serviceIndex === -1) {
-      console.log('❌ BACKEND DELETE: Service bulunamadı');
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
     }
 
@@ -1754,14 +1879,11 @@ app.delete('/api/services/:serviceId/images/:imageIndex', authenticateToken, asy
     }
 
     // Hizmeti bul - hem id hem _id ile kontrol et
-    console.log('🔍 BACKEND DELETE: Aranan service ID:', serviceId);
-    console.log('🔍 BACKEND DELETE: User services:', user.services.map(s => ({ id: s.id, _id: s._id, name: s.name })));
     
     const serviceIndex = user.services.findIndex(service => 
       service.id == serviceId || service._id == serviceId || service._id.toString() == serviceId
     );
     
-    console.log('🔍 BACKEND DELETE: Bulunan service index:', serviceIndex);
     if (serviceIndex === -1) {
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
     }
@@ -2120,71 +2242,9 @@ app.delete('/api/customers/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Mevcut randevuların createdBy alanlarını düzelt
-// Mevcut randevulara serviceId alanı eklemek için migration endpoint
-app.post('/api/fix-appointments-service', authenticateToken, async (req, res) => {
-  try {
-    if (req.user.userType !== 'owner') {
-      return res.status(403).json({ error: 'Bu işlem sadece owner tarafından yapılabilir' });
-    }
-    
-    // serviceId alanı olmayan randevuları bul
-    const appointmentsWithoutServiceId = await Appointment.find({ 
-      businessId: req.user.businessId,
-      serviceId: { $exists: false }
-    });
 
-    // Her randevuya type alanını serviceId olarak ekle (geçici çözüm)
-    for (const appointment of appointmentsWithoutServiceId) {
-      appointment.serviceId = appointment.type; // type alanını serviceId olarak kullan
-      await appointment.save();
-    }
-    
-    res.json({ 
-      message: 'Randevular başarıyla güncellendi',
-      updatedCount: appointmentsWithoutServiceId.length
-    });
-  } catch (error) {
-    console.error('Migration error:', error);
-    res.status(500).json({ error: 'Migration sırasında hata oluştu' });
-  }
-});
 
-app.post('/api/fix-appointments', authenticateToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId);
-    if (!user || user.userType !== 'owner') {
-      return res.status(403).json({ error: 'Sadece işletme sahipleri bu işlemi yapabilir' });
-    }
 
-    // CreatedBy alanı eksik olan randevuları bul
-    const appointmentsWithoutCreatedBy = await Appointment.find({
-      businessId: user.businessId,
-      $or: [
-        { createdBy: { $exists: false } },
-        { createdBy: null }
-      ]
-    });
-
-    let updatedCount = 0;
-    for (let appointment of appointmentsWithoutCreatedBy) {
-      if (appointment.userId) {
-        await Appointment.findByIdAndUpdate(appointment._id, {
-          createdBy: appointment.userId
-        });
-        updatedCount++;
-      }
-    }
-
-    res.json({ 
-      message: `${updatedCount} randevunun createdBy alanı güncellendi`,
-      updatedCount 
-    });
-  } catch (error) {
-    console.error('Randevu düzeltme hatası:', error);
-    res.status(500).json({ error: 'Sunucu hatası' });
-  }
-});
 
 // Mağaza ayarlarını getir
 app.get('/api/store/settings', authenticateToken, async (req, res) => {
@@ -2291,11 +2351,14 @@ app.get('/api/public/store/:storeName', async (req, res) => {
     const user = await User.findOne({
       'storeSettings.enabled': true,
       'storeSettings.storeName': storeName.trim()
-    }).populate('businessId');
+    });
 
     if (!user || !user.storeSettings || !user.storeSettings.enabled) {
       return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
     }
+
+    // İşletme bilgilerini ayrıca getir
+    const business = await Business.findOne({ ownerId: user._id });
 
     // Public store bilgilerini döndür
     const storeData = {
@@ -2329,17 +2392,17 @@ app.get('/api/public/store/:storeName', async (req, res) => {
         }
         return service;
       }),
-      business: user.businessId ? {
-        name: user.businessId.name,
-        description: user.businessId.description,
-        address: user.businessId.address,
-        phone: user.businessId.phone,
-        email: user.businessId.email,
-        website: user.businessId.website,
-        logo: user.businessId.logo,
-        services: user.businessId.services,
-        staff: user.businessId.staff,
-        workingHours: user.businessId.workingHours
+      business: business ? {
+        name: business.name,
+        description: business.description,
+        address: business.address,
+        phone: business.phone,
+        email: business.email,
+        website: business.website,
+        logo: business.logo,
+        services: business.services,
+        staff: business.staff,
+        workingHours: business.workingHours
       } : null
     };
 
@@ -2415,7 +2478,7 @@ app.post('/api/public/store/:storeName/appointments', async (req, res) => {
         email: customerEmail || '',
         role: 'customer',
         businessId: storeOwner.businessId._id,
-        password: 'temp-password' // Geçici şifre
+        password: 'default-password'
       });
       await customer.save();
     }
@@ -2478,10 +2541,16 @@ app.get('/api/public/store/:storeName/available-slots', async (req, res) => {
       return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
     }
 
-    // Hizmeti bul
-    const service = storeOwner.services.find(s => 
-      (s.id || s._id).toString() === serviceId
-    );
+    // İşletme bilgisi mevcut mu kontrol et
+    if (!storeOwner.businessId) {
+      return res.status(400).json({ error: 'İşletme bilgisi bulunamadı' });
+    }
+
+    // Hizmeti bul (string veya object olabilir)
+    const service = storeOwner.services.find(s => {
+      const sid = (typeof s === 'object' && s !== null) ? (s.id || s._id) : s;
+      return sid && sid.toString() === serviceId;
+    });
     
     if (!service) {
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
@@ -2500,16 +2569,13 @@ app.get('/api/public/store/:storeName/available-slots', async (req, res) => {
       ...(staffId && { staffId: staffId })
     });
 
-    // Çalışma saatlerini al (varsayılan: 09:00-18:00)
-    const workingHours = storeOwner.businessId.workingHours || {
-      monday: { start: '09:00', end: '18:00', enabled: true },
-      tuesday: { start: '09:00', end: '18:00', enabled: true },
-      wednesday: { start: '09:00', end: '18:00', enabled: true },
-      thursday: { start: '09:00', end: '18:00', enabled: true },
-      friday: { start: '09:00', end: '18:00', enabled: true },
-      saturday: { start: '09:00', end: '18:00', enabled: true },
-      sunday: { start: '09:00', end: '18:00', enabled: false }
-    };
+    // Çalışma saatlerini al - sadece kullanıcının tanımladığı saatler
+    const workingHours = storeOwner.businessId.workingHours;
+
+    // Çalışma saatleri tanımlanmamışsa boş slot döndür
+    if (!workingHours) {
+      return res.json({ availableSlots: [] });
+    }
 
     // Gün adını al
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -2521,7 +2587,7 @@ app.get('/api/public/store/:storeName/available-slots', async (req, res) => {
     }
 
     // Müsait saatleri hesapla
-    const serviceDuration = service.duration || 60;
+    const serviceDuration = (typeof service === 'object' && service !== null) ? (service.duration || 60) : 60;
     const availableSlots = [];
     
     const [startHour, startMinute] = daySchedule.start.split(':').map(Number);
@@ -2588,6 +2654,259 @@ app.get('/api/public/store/:storeName/staff', async (req, res) => {
   }
 });
 
+// Mağaza randevularını getir (public endpoint - takvim görünümü için)
+app.get('/api/public/store/:storeName/appointments', async (req, res) => {
+  try {
+    const { storeName } = req.params;
+    const { staffId, startDate, endDate } = req.query;
+
+    if (!storeName) {
+      return res.status(400).json({ error: 'Mağaza adı gerekli' });
+    }
+
+    // Mağaza sahibini bul
+    const storeOwner = await User.findOne({
+      'storeSettings.enabled': true,
+      'storeSettings.storeName': storeName.trim()
+    });
+
+    if (!storeOwner || !storeOwner.storeSettings || !storeOwner.storeSettings.enabled) {
+      return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
+    }
+
+    // BusinessId kontrolü
+    if (!storeOwner.businessId) {
+      return res.status(404).json({ error: 'İşletme bilgileri bulunamadı' });
+    }
+
+    // Tarih aralığını belirle (varsayılan olarak bugünden 30 gün sonraya kadar)
+    const start = startDate ? new Date(startDate) : new Date();
+    const end = endDate ? new Date(endDate) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    // Query oluştur
+    let query = {
+      businessId: storeOwner.businessId,
+      date: { $gte: start, $lte: end },
+      status: { $ne: 'cancelled' }
+    };
+
+    // Belirli bir personel için filtreleme
+    if (staffId && staffId !== 'all') {
+      query.staffId = staffId;
+    }
+
+    // Randevuları getir
+    const appointments = await Appointment.find(query)
+      .sort({ date: 1, time: 1 });
+
+    // Sadece gerekli bilgileri döndür (müşteri gizliliği için)
+    const publicAppointments = appointments.map(apt => ({
+      id: apt._id,
+      date: apt.date,
+      time: apt.time,
+      duration: apt.duration || 60,
+      service: apt.service,
+      staffId: apt.staffId || null,
+      staffName: apt.staffName || 'Belirtilmedi',
+      status: apt.status,
+      // Müşteri bilgilerini gizle, sadece dolu olduğunu göster
+      isBooked: true
+    }));
+
+    res.json({ appointments: publicAppointments });
+
+  } catch (error) {
+    console.error('Mağaza randevularını getirme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Mağaza çalışma saatlerini getir (public endpoint)
+app.get('/api/public/store/:storeName/working-hours', async (req, res) => {
+  try {
+    const { storeName } = req.params;
+    const { staffId, serviceId } = req.query;
+
+    if (!storeName) {
+      return res.status(400).json({ error: 'Mağaza adı gerekli' });
+    }
+
+    // Mağaza sahibini bul
+    const storeOwner = await User.findOne({
+      'storeSettings.enabled': true,
+      'storeSettings.storeName': storeName.trim()
+    });
+
+    if (!storeOwner || !storeOwner.storeSettings || !storeOwner.storeSettings.enabled) {
+      return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
+    }
+
+    // BusinessId kontrolü
+    if (!storeOwner.businessId) {
+      storeOwner.businessId = storeOwner._id;
+      await storeOwner.save();
+    }
+
+    // Business kaydını kontrol et
+    let business = await Business.findById(storeOwner.businessId);
+    
+    let workingHours = null;
+    let serviceCreatorId = null;
+
+    // Eğer serviceId verilmişse, o hizmeti oluşturan personeli bul
+    if (serviceId) {
+      // Önce store owner'ın hizmetlerinde ara
+      if (storeOwner.services && Array.isArray(storeOwner.services)) {
+        const ownerService = storeOwner.services.find(service => {
+          if (typeof service === 'object' && service !== null) {
+            return service.id === serviceId || service._id === serviceId;
+          }
+          return false;
+        });
+        
+        if (ownerService) {
+          serviceCreatorId = storeOwner._id;
+        }
+      }
+
+      // Eğer owner'da bulunamadıysa, personellerin hizmetlerinde ara
+      if (!serviceCreatorId && business && business.staff) {
+        for (const staff of business.staff) {
+          if (staff.services && Array.isArray(staff.services)) {
+            const staffService = staff.services.find(service => {
+              if (typeof service === 'object' && service !== null) {
+                return service.id === serviceId || service._id === serviceId;
+              }
+              return false;
+            });
+            
+            if (staffService) {
+              serviceCreatorId = staff._id;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Çalışma saatlerini belirle
+    if (serviceCreatorId) {
+      // Hizmet oluşturan kişinin çalışma saatlerini kullan
+      if (serviceCreatorId.toString() === storeOwner._id.toString()) {
+        // Store owner'ın çalışma saatleri
+        if (storeOwner.workingHours && typeof storeOwner.workingHours === 'object') {
+          workingHours = storeOwner.workingHours;
+        }
+      } else {
+        // Personelin çalışma saatleri
+        const staff = business && business.staff ? 
+          business.staff.find(s => s._id.toString() === serviceCreatorId.toString()) : null;
+        
+        if (staff && staff.workingHours && typeof staff.workingHours === 'object') {
+          workingHours = staff.workingHours;
+        }
+      }
+    } else if (staffId && staffId !== 'all') {
+      // Belirli bir personelin çalışma saatleri (eski davranış)
+      const staff = business && business.staff ? 
+        business.staff.find(s => s._id.toString() === staffId) : null;
+      
+      if (staff && staff.workingHours && typeof staff.workingHours === 'object') {
+        workingHours = staff.workingHours;
+      } else if (storeOwner.workingHours && typeof storeOwner.workingHours === 'object') {
+        workingHours = storeOwner.workingHours;
+      } else if (business && business.workingHours && typeof business.workingHours === 'object') {
+        workingHours = business.workingHours;
+      }
+    } else {
+      // Genel çalışma saatleri için öncelik sırası: User -> Business
+      if (storeOwner.workingHours && typeof storeOwner.workingHours === 'object') {
+        workingHours = storeOwner.workingHours;
+      } else if (business && business.workingHours && typeof business.workingHours === 'object') {
+        workingHours = business.workingHours;
+      }
+    }
+
+    // Eğer hiç çalışma saati bulunamadıysa boş obje döndür
+    if (!workingHours) {
+      workingHours = {};
+    }
+
+    res.json({ workingHours, serviceCreatorId });
+
+  } catch (error) {
+    console.error('Mağaza çalışma saatlerini getirme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Randevu talebi endpoint'i - Basit form için
+app.post('/api/public/store/:storeName/appointment-request', async (req, res) => {
+  console.log('Appointment request endpoint hit:', req.params, req.body);
+  try {
+    const { storeName } = req.params;
+    const { firstName, lastName, phone, serviceName, serviceId } = req.body;
+
+    // Form validasyonu
+    console.log('Form validation check:', { firstName, lastName, phone });
+    if (!firstName || !lastName || !phone) {
+      console.log('Form validation failed');
+      return res.status(400).json({ error: 'Ad, soyad ve telefon alanları zorunludur.' });
+    }
+
+    // Mağaza sahibini bul
+    console.log('Looking for store owner:', storeName);
+    
+    const storeOwner = await User.findOne({ 
+      'storeSettings.storeName': { $regex: new RegExp(`^${storeName}$`, 'i') } 
+    });
+    console.log('Store owner found:', storeOwner ? 'Yes' : 'No');
+
+    if (!storeOwner) {
+      console.log('Store owner not found');
+      return res.status(404).json({ error: 'Mağaza bulunamadı' });
+    }
+
+    // Randevu talebi verilerini hazırla
+    const appointmentRequestData = {
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      phone: phone.trim(),
+      serviceName: serviceName || 'Genel Randevu',
+      storeName: storeName,
+      storeOwnerId: storeOwner._id,
+      status: 'pending',
+      notes: `Randevu talebi - ${firstName} ${lastName} (${phone}) - ${serviceName || 'Genel Randevu'}`
+    };
+
+    // ServiceId varsa ve geçerli ObjectId ise ekle
+    if (serviceId && mongoose.Types.ObjectId.isValid(serviceId)) {
+      appointmentRequestData.serviceId = serviceId;
+    }
+
+    // Randevu talebi oluştur
+    const appointmentRequest = new AppointmentRequest(appointmentRequestData);
+    await appointmentRequest.save();
+
+    console.log('Randevu talebi oluşturuldu:', {
+      id: appointmentRequest._id,
+      customer: `${firstName} ${lastName}`,
+      phone: phone,
+      service: serviceName,
+      store: storeName
+    });
+
+    res.status(201).json({ 
+      message: 'Randevu talebiniz başarıyla alındı. En kısa sürede sizinle iletişime geçeceğiz.',
+      requestId: appointmentRequest._id
+    });
+
+  } catch (error) {
+    console.error('Randevu talebi oluşturma hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
 // Geocoding proxy endpoint - CORS sorununu çözmek için
 app.get('/api/geocode', async (req, res) => {
   try {
@@ -2620,8 +2939,135 @@ app.get('/api/geocode', async (req, res) => {
   }
 });
 
+// Yeni randevu talebi oluştur
+app.post('/api/appointment-requests', async (req, res) => {
+  try {
+    const { firstName, lastName, phone, serviceName, storeName, notes } = req.body;
+    
+    if (!firstName || !lastName || !phone) {
+      return res.status(400).json({ error: 'Ad, soyad ve telefon alanları zorunludur' });
+    }
+
+    // Store name'e göre business'ı bul
+    const business = await Business.findOne({ name: storeName });
+    if (!business) {
+      return res.status(404).json({ error: 'İşletme bulunamadı' });
+    }
+
+    const appointmentRequest = new AppointmentRequest({
+      firstName,
+      lastName,
+      phone,
+      serviceName: serviceName || '',
+      storeName,
+      storeOwnerId: business.ownerId,
+      notes: notes || '',
+      status: 'pending'
+    });
+
+    await appointmentRequest.save();
+    
+    console.log('Yeni randevu talebi oluşturuldu:', appointmentRequest);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Randevu talebiniz başarıyla gönderildi',
+      appointmentRequest
+    });
+
+  } catch (error) {
+    console.error('Randevu talebi oluşturma hatası:', error);
+    res.status(500).json({ 
+      error: 'Randevu talebi oluşturulurken bir hata oluştu',
+      details: error.message 
+    });
+  }
+});
+
+// Randevu talebinin durumunu güncelle
+app.put('/api/appointment-requests/:requestId', async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { status } = req.body;
+    
+    if (!mongoose.Types.ObjectId.isValid(requestId)) {
+      return res.status(400).json({ error: 'Geçersiz randevu talebi ID' });
+    }
+
+    if (!status) {
+      return res.status(400).json({ error: 'Durum bilgisi gereklidir' });
+    }
+
+    const validStatuses = ['pending', 'contacted', 'scheduled', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Geçersiz durum değeri' });
+    }
+
+    const appointmentRequest = await AppointmentRequest.findByIdAndUpdate(
+      requestId,
+      { status },
+      { new: true }
+    );
+
+    if (!appointmentRequest) {
+      return res.status(404).json({ error: 'Randevu talebi bulunamadı' });
+    }
+
+    console.log('Randevu talebi durumu güncellendi:', appointmentRequest);
+
+    res.status(200).json({
+      success: true,
+      message: 'Durum başarıyla güncellendi',
+      appointmentRequest
+    });
+
+  } catch (error) {
+    console.error('Randevu talebi durum güncelleme hatası:', error);
+    res.status(500).json({ 
+      error: 'Durum güncellenirken bir hata oluştu',
+      details: error.message 
+    });
+  }
+});
+
+// Randevu taleplerini listeleyen endpoint
+app.get('/api/appointment-requests/:storeOwnerId', async (req, res) => {
+  try {
+    const { storeOwnerId } = req.params;
+    console.log('Appointment requests endpoint çağrıldı, storeOwnerId:', storeOwnerId);
+    
+    // Store owner ID'nin geçerli olup olmadığını kontrol et
+    if (!mongoose.Types.ObjectId.isValid(storeOwnerId)) {
+      console.log('Geçersiz store owner ID:', storeOwnerId);
+      return res.status(400).json({ error: 'Geçersiz store owner ID' });
+    }
+
+    // Randevu taleplerini getir - hem string hem ObjectId formatında dene
+    const appointmentRequests = await AppointmentRequest.find({ 
+      $or: [
+        { storeOwnerId: storeOwnerId },
+        { storeOwnerId: new mongoose.Types.ObjectId(storeOwnerId) }
+      ]
+    }).sort({ createdAt: -1 }); // En yeni önce
+
+    console.log('Bulunan randevu talepleri:', appointmentRequests.length);
+    console.log('Randevu talepleri:', appointmentRequests);
+
+    res.status(200).json({
+      success: true,
+      appointmentRequests: appointmentRequests
+    });
+
+  } catch (error) {
+    console.error('Randevu talepleri getirme hatası:', error);
+    res.status(500).json({ 
+      error: 'Randevu talepleri getirilirken bir hata oluştu',
+      details: error.message 
+    });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`Server ${PORT} portunda çalışıyor`);
 });
 
 // Global error handler
