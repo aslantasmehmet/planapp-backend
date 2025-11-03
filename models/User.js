@@ -25,6 +25,10 @@ const userSchema = new mongoose.Schema({
     required: [true, 'Şifre gereklidir'],
     minlength: 6
   },
+  avatar: {
+    type: String,
+    default: null
+  },
   userType: {
     type: String,
     enum: ['owner', 'staff'],

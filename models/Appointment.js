@@ -80,6 +80,33 @@ const appointmentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
+  ,
+  payments: [
+    {
+      amount: {
+        type: Number,
+        required: true,
+        min: 0
+      },
+      method: {
+        type: String,
+        trim: true,
+        default: 'nakit' // nakit, kart, havale, diğer
+      },
+      note: {
+        type: String,
+        trim: true
+      },
+      date: {
+        type: Date,
+        default: Date.now
+      },
+      recordedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    }
+  ]
 });
 
 // Update the updatedAt field before saving
