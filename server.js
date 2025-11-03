@@ -6,6 +6,7 @@ const morgan = require('morgan');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const fs = require('fs');
+
 const User = require('./models/User');
 const Appointment = require('./models/Appointment');
 const Business = require('./models/Business');
@@ -39,6 +40,10 @@ app.use((err, req, res, next) => {
   console.error('Express Error:', err);
   res.status(500).json({ error: 'Sunucu hatası', details: err.message });
 });
+
+
+
+
 
 // JWT doğrulama middleware
 const authenticateToken = (req, res, next) => {
@@ -299,42 +304,50 @@ app.get('/api/plans', authenticateToken, (req, res) => {
 
 // RANDEVU ENDPOINT'LERİ
 
-// Randevu durumlarını otomatik güncelle
+// Randevu durumlarını otomatik güncelle (geçmiş randevular => completed)
 const updateAppointmentStatuses = async (appointments) => {
   const now = new Date();
   const updatedAppointments = [];
-  
+
   for (let appointment of appointments) {
-    const appointmentDateTime = new Date(`${appointment.date} ${appointment.time}`);
-    let needsUpdate = false;
-    let newStatus = appointment.status;
-    
-    // Eğer randevu zamanı geçmişse ve durum 'completed' değilse, 'completed' yap
-    if (appointmentDateTime < now && appointment.status !== 'completed') {
-      newStatus = 'completed';
-      needsUpdate = true;
+    try {
+      // İptal/bloke randevulara dokunma
+      if (appointment?.status === 'cancelled' || appointment?.status === 'blocked' || appointment?.isBlocked === true) {
+        updatedAppointments.push(appointment);
+        continue;
+      }
+
+      // Tarih + bitiş saatinden Date oluştur
+      const dateObj = new Date(appointment.date);
+      let endDateTime = new Date(dateObj);
+
+      const pickTime = (appointment.endTime || appointment.startTime || '23:59');
+      const [hh, mm] = String(pickTime).split(':');
+      const hours = Number(hh);
+      const minutes = Number(mm || 0);
+      endDateTime.setHours(Number.isFinite(hours) ? hours : 23, Number.isFinite(minutes) ? minutes : 59, 0, 0);
+
+      let needsUpdate = false;
+      let newStatus = appointment.status;
+
+      // Geçmiş randevuysa ve completed değilse => completed
+      if (endDateTime < now && appointment.status !== 'completed') {
+        newStatus = 'completed';
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        await Appointment.findByIdAndUpdate(appointment._id, { status: newStatus });
+        appointment.status = newStatus;
+      }
+
+      updatedAppointments.push(appointment);
+    } catch (e) {
+      // Hata durumunda randevuyu değiştirmeden pushla
+      updatedAppointments.push(appointment);
     }
-    
-    // Eğer randevu zamanı gelecekte ve durum 'completed' ise, 'confirmed' yap
-    if (appointmentDateTime > now && appointment.status === 'completed') {
-      newStatus = 'confirmed';
-      needsUpdate = true;
-    }
-    
-    // Eğer randevu gelecekte ve durum 'pending' ise, 'confirmed' yap
-    if (appointmentDateTime > now && appointment.status === 'pending') {
-      newStatus = 'confirmed';
-      needsUpdate = true;
-    }
-    
-    if (needsUpdate) {
-      await Appointment.findByIdAndUpdate(appointment._id, { status: newStatus });
-      appointment.status = newStatus;
-    }
-    
-    updatedAppointments.push(appointment);
   }
-  
+
   return updatedAppointments;
 };
 
@@ -483,12 +496,47 @@ app.put('/api/appointments/:id', authenticateToken, async (req, res) => {
       query.createdBy = user._id;
     }
 
+    // Önce mevcut randevuyu bul
+    const existing = await Appointment.findOne(query);
+    if (!existing) {
+      return res.status(404).json({ error: 'Randevu bulunamadı veya yetkiniz yok' });
+    }
+
+    // Geçmiş tarih/saat için güncelleme engeli
+    try {
+      const effectiveDate = req.body.date ? new Date(req.body.date) : new Date(existing.date);
+      const pickTime = req.body.endTime || req.body.startTime || existing.endTime || existing.startTime || '23:59';
+      const [hh, mm] = String(pickTime).split(':');
+      const hours = Number(hh);
+      const minutes = Number(mm || 0);
+      const endDateTime = new Date(effectiveDate);
+      endDateTime.setHours(Number.isFinite(hours) ? hours : 23, Number.isFinite(minutes) ? minutes : 59, 0, 0);
+
+      if (endDateTime < new Date()) {
+        return res.status(400).json({ error: 'Geçmiş tarih/saat için randevu güncellenemez' });
+      }
+    } catch (e) {
+      return res.status(400).json({ error: 'Geçersiz tarih/saat formatı' });
+    }
+
+    // Yarım saatlik zaman adımı doğrulaması (sadece saat alanları güncelleniyorsa uygula)
+    const isHalfHour = (t) => {
+      if (!t) return true;
+      const parts = String(t).split(':');
+      if (parts.length < 2) return false;
+      const mins = Number(parts[1]);
+      return mins === 0 || mins === 30;
+    };
+
+    if (typeof req.body.startTime !== 'undefined' && !isHalfHour(req.body.startTime)) {
+      return res.status(400).json({ error: 'Başlangıç saati 30 dakikalık adımlarda olmalıdır (örn. 08:00, 08:30).' });
+    }
+    if (typeof req.body.endTime !== 'undefined' && !isHalfHour(req.body.endTime)) {
+      return res.status(400).json({ error: 'Bitiş saati 30 dakikalık adımlarda olmalıdır (örn. 08:00, 08:30).' });
+    }
+
     // Randevuyu güncelle
-    const appointment = await Appointment.findOneAndUpdate(
-      query,
-      req.body,
-      { new: true }
-    );
+    const appointment = await Appointment.findOneAndUpdate(query, req.body, { new: true });
     
     if (!appointment) {
       return res.status(404).json({ error: 'Randevu bulunamadı veya yetkiniz yok' });
@@ -1167,6 +1215,105 @@ app.delete('/api/staff/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Avatar yükleme
+app.post('/api/staff/:id/upload-avatar', authenticateToken, async (req, res) => {
+  try {
+    console.log('=== AVATAR UPLOAD DEBUG ===');
+    console.log('Avatar upload başlatıldı:', { staffId: req.params.id, userId: req.user.userId });
+    console.log('Request headers:', req.headers);
+    console.log('Request content-type:', req.headers['content-type']);
+    console.log('Request content-length:', req.headers['content-length']);
+    console.log('Request body keys:', Object.keys(req.body));
+    console.log('Request body type:', typeof req.body);
+    console.log('Request body length:', JSON.stringify(req.body).length);
+    console.log('Request body sample:', JSON.stringify(req.body).substring(0, 200));
+    console.log('Raw body exists:', !!req.rawBody);
+    
+    const { id } = req.params;
+    const { avatar } = req.body;
+    const ownerId = req.user.userId;
+
+    console.log('Avatar field exists:', !!avatar);
+    console.log('Avatar type:', typeof avatar);
+    
+    if (!avatar) {
+      console.log('HATA: Avatar verisi bulunamadı!');
+      console.log('Tam req.body:', JSON.stringify(req.body, null, 2));
+      console.log('Request body is empty or avatar field missing');
+      return res.status(400).json({ error: 'Avatar verisi bulunamadı. Lütfen dosya seçtiğinizden emin olun.' });
+    }
+
+    // Base64 formatını kontrol et
+    if (!avatar.startsWith('data:image/')) {
+      console.log('Geçersiz avatar formatı:', avatar.substring(0, 50));
+      return res.status(400).json({ error: 'Geçersiz avatar formatı' });
+    }
+    
+    console.log('Avatar verisi alındı, format:', avatar.substring(0, 50));
+
+    // Owner kontrolü
+    const owner = await User.findById(ownerId);
+    if (!owner || owner.userType !== 'owner') {
+      return res.status(403).json({ error: 'Sadece işletme sahipleri avatar yükleyebilir' });
+    }
+
+    // Personel bulma ve yetki kontrolü
+    const staff = await User.findOne({
+      _id: id,
+      userType: 'staff',
+      createdBy: ownerId
+    });
+
+    if (!staff) {
+      return res.status(404).json({ error: 'Personel bulunamadı veya yetkiniz yok' });
+    }
+
+    // Personelin avatar bilgisini güncelle (base64 formatında)
+    await User.findByIdAndUpdate(id, { avatar: avatar });
+
+    res.json({ 
+      message: 'Avatar başarıyla yüklendi',
+      avatar: avatar
+    });
+  } catch (error) {
+    console.error('Avatar yükleme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Avatar silme
+app.delete('/api/staff/:id/avatar', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const ownerId = req.user.userId;
+
+    // Owner kontrolü
+    const owner = await User.findById(ownerId);
+    if (!owner || owner.userType !== 'owner') {
+      return res.status(403).json({ error: 'Sadece işletme sahipleri avatar silebilir' });
+    }
+
+    // Personel bulma ve yetki kontrolü
+    const staff = await User.findOne({
+      _id: id,
+      userType: 'staff',
+      createdBy: ownerId
+    });
+
+    if (!staff) {
+      return res.status(404).json({ error: 'Personel bulunamadı veya yetkiniz yok' });
+    }
+
+    // Personelin avatar bilgisini temizle (veritabanından)
+    await User.findByIdAndUpdate(id, { $unset: { avatar: 1 } });
+
+    res.json({ message: 'Avatar başarıyla silindi' });
+  } catch (error) {
+    console.error('Avatar silme hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
 // Belirli bir staff'ın hizmetlerini getir (owner için)
 app.get('/api/services/staff/:staffId', authenticateToken, async (req, res) => {
   try {
@@ -1623,27 +1770,49 @@ app.put('/api/services/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     const { name, description, duration, price, showInStore, storeDescription, storeImages } = req.body;
     
+    console.log('🔍 BACKEND: Hizmet güncelleme isteği');
+    console.log('📋 Aranan ID:', id);
     
     const user = await User.findById(req.user.userId);
     const currentServices = user.services || [];
     
+    console.log('📊 Mevcut hizmetler:', currentServices.map(s => ({
+      type: typeof s,
+      id: s.id,
+      _id: s._id,
+      name: s.name
+    })));
     
     // Güncellenecek hizmeti bul
+    console.log('🔍 BACKEND DEBUG: Aranan ID:', id);
+    console.log('🔍 BACKEND DEBUG: ID tipi:', typeof id);
+    console.log('🔍 BACKEND DEBUG: Mevcut services sayısı:', currentServices.length);
+    
+    currentServices.forEach((s, index) => {
+      if (typeof s === 'object' && s !== null) {
+        const serviceId = (s._id || s.id)?.toString();
+        console.log(`🔍 Service ${index}: ID=${serviceId}, _id=${s._id}, id=${s.id}, name=${s.name}`);
+      }
+    });
+    
     const serviceIndex = currentServices.findIndex(s => {
       if (typeof s === 'object' && s !== null) {
-        const serviceId = s._id?.toString() || s.id?.toString();
+        // Frontend'e gönderilen ID ile aynı mantığı kullan: service._id || service.id
+        const serviceId = (s._id || s.id)?.toString();
+        console.log('🔍 Karşılaştırma:', serviceId, '===', id, '?', serviceId === id);
         return serviceId === id;
       }
       return s === id;
     });
     
+    console.log('📍 Bulunan index:', serviceIndex);
     
     if (serviceIndex === -1) {
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
     }
 
     const currentService = currentServices[serviceIndex];
-    
+
     // Eğer sadece store bilgileri güncelleniyorsa, name kontrolü yapma
     if (name && name.trim()) {
       // Aynı isimde başka hizmet var mı kontrol et (güncellenecek hizmet hariç)
@@ -1656,36 +1825,68 @@ app.put('/api/services/:id', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Bu isimde bir hizmet zaten mevcut' });
       }
     }
-    
-    // Hizmeti güncelle
-    const updatedService = {
-      id: typeof currentService === 'object' ? currentService.id : id,
-      name: name !== undefined ? (name || '').trim() : (typeof currentService === 'object' ? currentService.name : ''),
-      description: description !== undefined ? description : (typeof currentService === 'object' ? currentService.description || '' : ''),
-      duration: duration !== undefined ? parseInt(duration) || 0 : (typeof currentService === 'object' ? currentService.duration || 0 : 0),
-      price: price !== undefined ? parseFloat(price) || 0 : (typeof currentService === 'object' ? currentService.price || 0 : 0),
-      images: typeof currentService === 'object' ? currentService.images || [] : [],
-      showInStore: showInStore !== undefined ? showInStore : (typeof currentService === 'object' ? currentService.showInStore !== false : true),
-      storeDescription: storeDescription !== undefined ? storeDescription : (typeof currentService === 'object' ? currentService.storeDescription || '' : ''),
-      storeImages: storeImages !== undefined ? storeImages : (typeof currentService === 'object' ? currentService.storeImages || [] : []),
-      createdAt: typeof currentService === 'object' ? currentService.createdAt : new Date(),
-      updatedAt: new Date()
+
+    // Yalnızca gönderilen alanları ayarla (in-place update). Alt belge _id'sini koru.
+    const updates = {};
+    if (name !== undefined) updates.name = (name || '').trim();
+    if (description !== undefined) updates.description = description;
+    if (duration !== undefined) updates.duration = parseInt(duration) || 0;
+    if (price !== undefined) updates.price = parseFloat(price) || 0;
+    if (showInStore !== undefined) updates.showInStore = !!showInStore;
+    if (storeDescription !== undefined) updates.storeDescription = storeDescription;
+    if (storeImages !== undefined) updates.storeImages = storeImages;
+    updates.updatedAt = new Date();
+
+    const setPayload = {};
+    Object.entries(updates).forEach(([k, v]) => {
+      setPayload[`services.$.${k}`] = v;
+    });
+
+    // Eşleşme için _id varsa onu, yoksa custom id'yi kullan
+    const matchByObjectId = (currentService && currentService._id) ? { 'services._id': currentService._id } : null;
+    const matchByCustomId = (currentService && currentService.id) ? { 'services.id': currentService.id } : null;
+
+    let modified = 0;
+    if (matchByObjectId) {
+      const res1 = await User.updateOne(
+        { _id: req.user.userId, ...matchByObjectId },
+        { $set: setPayload }
+      );
+      modified += res1.modifiedCount || res1.nModified || 0;
+    }
+
+    if (!modified && matchByCustomId) {
+      const res2 = await User.updateOne(
+        { _id: req.user.userId, ...matchByCustomId },
+        { $set: setPayload }
+      );
+      modified += res2.modifiedCount || res2.nModified || 0;
+    }
+
+    if (!modified) {
+      return res.status(404).json({ error: 'Hizmet güncellenemedi (eşleşme bulunamadı)' });
+    }
+
+    // Güncel kullanıcıyı tekrar al ve ilgili hizmeti döndür
+    const freshUser = await User.findById(req.user.userId);
+    const freshServices = freshUser?.services || [];
+    const fresh = freshServices.find(s => ((s?._id || s?.id)?.toString?.() || s) === id);
+
+    // Response servis objesini oluşturalım (id alanını _id ile hizala)
+    const responseService = fresh ? {
+      ...(typeof fresh === 'object' ? fresh.toObject?.() || fresh : { name: fresh || '', description: '', duration: 0, price: 0 }),
+      id: (fresh?._id && fresh._id.toString) ? fresh._id.toString() : (fresh?.id || id)
+    } : {
+      ...currentService,
+      ...updates,
+      id: (currentService?._id && currentService._id.toString) ? currentService._id.toString() : (currentService?.id || id)
     };
-    
-    
-    currentServices[serviceIndex] = updatedService;
-    
-    const updateResult = await User.findByIdAndUpdate(
-      req.user.userId,
-      { services: currentServices },
-      { new: true }
-    );
-    
-    
+
     res.json({
+      success: true,
       message: 'Hizmet başarıyla güncellendi',
-      service: updatedService,
-      services: currentServices
+      service: responseService,
+      services: freshServices
     });
   } catch (error) {
     console.error('❌ BACKEND: Hizmet güncelleme hatası:', error);
@@ -2164,8 +2365,10 @@ app.put('/api/customers/:id', authenticateToken, async (req, res) => {
     const user = await User.findById(req.user.userId).select('customers');
     const customers = user?.customers || [];
     
-    // Müşteriyi bul
-    const customerIndex = customers.findIndex(c => c.id === id);
+    // Müşteriyi bul (id veya _id ile)
+    const customerIndex = customers.findIndex(c => 
+      c.id === id || c._id === id || (c._id?.toString && c._id?.toString() === id)
+    );
     if (customerIndex === -1) {
       return res.status(404).json({ error: 'Müşteri bulunamadı' });
     }
@@ -2216,8 +2419,10 @@ app.delete('/api/customers/:id', authenticateToken, async (req, res) => {
     const user = await User.findById(req.user.userId).select('customers');
     const customers = user?.customers || [];
     
-    // Müşteriyi bul
-    const customerIndex = customers.findIndex(c => c.id === id);
+    // Müşteriyi bul (id veya _id ile)
+    const customerIndex = customers.findIndex(c => 
+      c.id === id || c._id === id || (c._id?.toString && c._id?.toString() === id)
+    );
     if (customerIndex === -1) {
       return res.status(404).json({ error: 'Müşteri bulunamadı' });
     }
@@ -3068,6 +3273,7 @@ app.get('/api/appointment-requests/:storeOwnerId', async (req, res) => {
 });
 
 app.listen(PORT, () => {
+  console.log(`Server ${PORT} portunda çalışıyor`);
 });
 
 // Global error handler
@@ -3077,4 +3283,50 @@ process.on('uncaughtException', (error) => {
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Randevuya ödeme ekle
+app.post('/api/appointments/:id/payments', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user || !user.businessId) {
+      return res.status(400).json({ error: 'Kullanıcının işletme bilgisi bulunamadı' });
+    }
+
+    const appointmentId = req.params.id;
+    const { amount, method, note, date } = req.body;
+
+    if (amount === undefined || amount === null || isNaN(Number(amount)) || Number(amount) < 0) {
+      return res.status(400).json({ error: 'Geçerli bir ödeme tutarı girin' });
+    }
+
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ error: 'Randevu bulunamadı' });
+    }
+
+    // Yetki: Aynı işletmeye ait olmalı
+    if (appointment.businessId.toString() !== user.businessId.toString()) {
+      return res.status(403).json({ error: 'Bu randevuya ödeme ekleme yetkiniz yok' });
+    }
+
+    const paymentRecord = {
+      amount: Number(amount),
+      method: method || 'nakit',
+      note: note || '',
+      date: date ? new Date(date) : new Date(),
+      recordedBy: user._id
+    };
+
+    const updated = await Appointment.findByIdAndUpdate(
+      appointmentId,
+      { $push: { payments: paymentRecord }, $set: { updatedAt: new Date() } },
+      { new: true }
+    ).populate('createdBy', 'name userType');
+
+    return res.json({ appointment: updated });
+  } catch (error) {
+    console.error('Ödeme eklenirken hata:', error);
+    return res.status(500).json({ error: 'Ödeme eklenirken sunucu hatası oluştu' });
+  }
 });
