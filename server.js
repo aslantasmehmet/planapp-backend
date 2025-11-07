@@ -172,7 +172,15 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Yeni kullanıcı oluştur
-    const userData = { name, email, phone, password, userType: 'owner' };
+    const userData = { 
+      name, 
+      email, 
+      phone, 
+      password, 
+      userType: 'owner',
+      isPremium: false,
+      trialStart: new Date()
+    };
     
     const user = new User(userData);
     await user.save();
@@ -203,7 +211,9 @@ app.post('/api/auth/register', async (req, res) => {
         email: user.email,
         phone: user.phone,
         userType: user.userType,
-        businessId: user.businessId
+        businessId: user.businessId,
+        isPremium: user.isPremium,
+        trialStart: user.trialStart
       }
     });
   } catch (error) {
@@ -274,6 +284,14 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
     }
+    // Deneme bitiş tarihi ve durumunu hesapla (kayıt tarihine göre)
+    const trialStart = user.createdAt;
+    const TRIAL_DAYS = 7;
+    const trialEndsAt = new Date(trialStart.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const isTrialActive = !user.isPremium && now < trialEndsAt;
+    const daysLeft = isTrialActive ? Math.ceil((trialEndsAt - now) / (24 * 60 * 60 * 1000)) : 0;
+
     res.json({ 
       user: {
         id: user._id,
@@ -282,7 +300,12 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
         phone: user.phone,
         userType: user.userType,
         businessId: user.businessId,
-        workingHours: user.workingHours
+        workingHours: user.workingHours,
+        isPremium: user.isPremium,
+        trialStart: trialStart,
+        trialEndsAt: trialEndsAt,
+        trialDaysLeft: daysLeft,
+        trialActive: isTrialActive
       }
     });
   } catch (error) {
@@ -297,6 +320,205 @@ app.get('/api/plans', authenticateToken, (req, res) => {
     message: 'Planlar başarıyla alındı',
     plans: ['Plan 1', 'Plan 2', 'Plan 3']
   });
+});
+
+// Premium durumunu getir
+app.get('/api/premium/status', authenticateToken, async (req, res) => {
+  try {
+    const actor = await User.findById(req.user.userId);
+    if (!actor) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+    }
+
+    // Staff için owner'ı bul, owner ise kendisi hedef olur
+    let target = actor;
+    if (actor.userType === 'staff') {
+      try {
+        const bizDoc = await Business.findById(actor.businessId);
+        if (bizDoc && bizDoc.ownerId) {
+          const ownerDoc = await User.findById(bizDoc.ownerId);
+          if (ownerDoc) target = ownerDoc;
+        } else {
+          const ownerCandidate = await User.findById(actor.businessId);
+          if (ownerCandidate && ownerCandidate.userType === 'owner') {
+            target = ownerCandidate;
+          }
+        }
+      } catch (e) {
+        console.warn('Owner çözümleme hatası (premium/status):', e.message);
+      }
+    }
+
+    const now = new Date();
+    const TRIAL_DAYS = 7;
+    const trialStart = target.createdAt || new Date(0);
+    const trialEndsAt = new Date(trialStart.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    const trialActive = !target.isPremium && now < trialEndsAt;
+    const daysLeft = trialActive ? Math.ceil((trialEndsAt - now) / (24 * 60 * 60 * 1000)) : 0;
+
+    // Üyelik ay bilgisi hesaplama (owner bazlı)
+    let membershipCurrentMonth = 0;
+    let membershipTotalMonths = target.membershipMonths || (target.planPeriod === 'annual' ? 12 : (target.planPeriod === 'monthly' ? 1 : 0));
+    if (target.membershipStartedAt) {
+      const start = new Date(target.membershipStartedAt);
+      const monthsDiff = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+      membershipCurrentMonth = Math.min(Math.max(1, monthsDiff + 1), membershipTotalMonths || 12);
+    }
+
+    // Bu ay kullanılan randevu sayısı (işletme bazlı) - legacy ownerId fallback ile
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    let legacyOwnerId = null;
+    if (actor.userType === 'owner') {
+      legacyOwnerId = actor._id;
+    } else {
+      const bizDoc2 = await Business.findById(actor.businessId);
+      if (bizDoc2 && bizDoc2.ownerId) {
+        legacyOwnerId = bizDoc2.ownerId;
+      } else {
+        // Eski kayıtlarda businessId yanlışlıkla ownerId olarak tutulmuş olabilir
+        const ownerCandidate2 = await User.findById(actor.businessId);
+        if (ownerCandidate2 && ownerCandidate2.userType === 'owner') {
+          legacyOwnerId = ownerCandidate2._id;
+        }
+      }
+    }
+    const businessIdQuery = legacyOwnerId && legacyOwnerId.toString() !== actor.businessId.toString()
+      ? { $in: [actor.businessId, legacyOwnerId] }
+      : actor.businessId;
+    const countFromAppointmentsThisMonth = await Appointment.countDocuments({
+      businessId: businessIdQuery,
+      isBlocked: false,
+      status: { $ne: 'cancelled' },
+      $or: [
+        { createdAt: { $gte: startOfMonth, $lte: endOfMonth } },
+        { $and: [
+          { createdAt: { $exists: false } },
+          { date: { $gte: startOfMonth, $lte: endOfMonth } }
+        ] }
+      ]
+    });
+    const usedCountThisMonth = Math.max(
+      Number.isFinite(target.usedAppointmentsThisMonth) ? target.usedAppointmentsThisMonth : 0,
+      countFromAppointmentsThisMonth
+    );
+
+    console.log('🧮 PREMIUM STATUS DEBUG:', {
+      actorUserId: actor._id?.toString(),
+      targetUserId: target._id?.toString(),
+      businessId: actor.businessId?.toString?.() || actor.businessId,
+      planType: target.planType,
+      planPeriod: target.planPeriod,
+      isPremium: target.isPremium,
+      monthlyQuotaRaw: target.monthlyQuota,
+      usedAppointmentsThisMonthField: target.usedAppointmentsThisMonth,
+      countFromAppointmentsThisMonth,
+      usedCountThisMonth
+    });
+
+    // Yıllık üyelikte kullanılan randevu sayısı (üyelik dönemi)
+    let usedCountThisYear = 0;
+    if (target.planPeriod === 'annual' && target.membershipStartedAt && target.membershipEndsAt) {
+      const membershipStart = new Date(target.membershipStartedAt);
+      const membershipEnd = new Date(target.membershipEndsAt);
+      usedCountThisYear = await Appointment.countDocuments({
+        businessId: businessIdQuery,
+        isBlocked: false,
+        date: { $gte: membershipStart, $lte: membershipEnd },
+        status: { $ne: 'cancelled' }
+      });
+    }
+
+    // Plan bazlı efektif kota
+    const planQuotaMap = { plus: 200, pro: 400, premium: null };
+    let effectiveMonthlyQuota = planQuotaMap[target.planType] ?? target.monthlyQuota ?? null;
+    // Üyelik süresi bitti mi?
+    const membershipEndsAtDate = target.membershipEndsAt ? new Date(target.membershipEndsAt) : null;
+    const membershipExpired = !!(membershipEndsAtDate && now >= membershipEndsAtDate);
+    // Deneme bitti ve premium değilse => randevu hakkı 0 olmalı
+    if (!target.isPremium && !trialActive) {
+      effectiveMonthlyQuota = 0;
+    }
+    // Üyelik bitti ise kota tamamen 0 olmalı (sınırsız gösterimi kaldır)
+    if (membershipExpired && !trialActive) {
+      effectiveMonthlyQuota = 0;
+    }
+    // Üyelik bitti ise kalan hak 0 olmalı (kota null ise sınırsız gösterimi korunur)
+    const remainingMonthly = effectiveMonthlyQuota == null
+      ? null
+      : (membershipExpired && !trialActive ? 0 : Math.max(effectiveMonthlyQuota - usedCountThisMonth, 0));
+
+    res.json({
+      isPremium: target.isPremium,
+      planType: target.planType || null,
+      planPeriod: target.planPeriod || null,
+      membershipStartedAt: target.membershipStartedAt || null,
+      membershipEndsAt: target.membershipEndsAt || null,
+      membershipMonths: membershipTotalMonths,
+      membershipCurrentMonth,
+      monthlyQuota: effectiveMonthlyQuota,
+      remaining: remainingMonthly,
+      usedAppointmentsThisMonth: usedCountThisMonth,
+      usedAppointmentsThisYear: usedCountThisYear,
+      annualQuota: effectiveMonthlyQuota == null ? null : (membershipTotalMonths > 0 ? effectiveMonthlyQuota * membershipTotalMonths : null),
+      lastResetAt: target.lastResetAt || null,
+      trialStart,
+      trialEndsAt,
+      trialActive,
+      trialDaysLeft: daysLeft
+      ,
+      membershipExpired
+    });
+  } catch (error) {
+    console.error('Premium durumu hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Premium aktivasyon (satın alma simülasyonu)
+app.post('/api/premium/activate', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+    }
+
+    const { plan, period } = req.body || {};
+    const validPlans = ['plus', 'pro', 'premium'];
+    const validPeriods = ['monthly', 'annual'];
+    if (!validPlans.includes(plan)) {
+      return res.status(400).json({ error: 'Geçersiz plan' });
+    }
+    const planPeriod = validPeriods.includes(period) ? period : 'monthly';
+
+    const now = new Date();
+    const months = planPeriod === 'annual' ? 12 : 1;
+    const ends = new Date(now);
+    ends.setMonth(ends.getMonth() + months);
+
+    // Aylık kota (ileride enforcement için): plus=200, premium=400, pro=sınırsız
+    let monthlyQuota = null;
+    if (plan === 'plus') monthlyQuota = 200;
+    if (plan === 'pro') monthlyQuota = 400;
+    if (plan === 'premium') monthlyQuota = null; // null => sınırsız
+
+    user.isPremium = true;
+    user.premiumStartedAt = now;
+    user.planType = plan;
+    user.planPeriod = planPeriod;
+    user.membershipStartedAt = now;
+    user.membershipEndsAt = ends;
+    user.membershipMonths = months;
+    user.monthlyQuota = monthlyQuota;
+    user.usedAppointmentsThisMonth = 0;
+    user.lastResetAt = now;
+    await user.save();
+
+    res.json({ message: 'Üyelik aktif edildi', isPremium: true, planType: plan, planPeriod });
+  } catch (error) {
+    console.error('Premium aktivasyon hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
 });
 
 
@@ -422,16 +644,41 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Kullanıcının işletme bilgisi bulunamadı' });
     }
 
-    // Staff ise owner'ın ID'sini bul, owner ise kendi ID'sini kullan
+    // Staff ise owner'ı Business üzerinden bul; owner ise kendi ID'sini kullan
     let appointmentOwnerId = req.user.userId;
     if (user.userType === 'staff') {
-      // Staff'ın bağlı olduğu owner'ı bul
-      const owner = await User.findOne({ 
-        _id: user.businessId, 
-        userType: 'owner' 
-      });
-      if (owner) {
-        appointmentOwnerId = owner._id;
+      let ownerIdFromBusiness = null;
+      let business = null;
+      // CastError'ı önlemek için geçerli ObjectId kontrolü
+      try {
+        if (user.businessId && mongoose.Types.ObjectId.isValid(user.businessId.toString())) {
+          business = await Business.findById(user.businessId);
+        }
+      } catch (e) {
+        console.warn('Business findById hata (staff):', e.message);
+      }
+      if (business && business.ownerId && mongoose.Types.ObjectId.isValid(business.ownerId.toString())) {
+        ownerIdFromBusiness = business.ownerId;
+      } else {
+        // Eski kayıtlar için fallback: businessId yanlışlıkla ownerId olabilir
+        try {
+          if (user.businessId && mongoose.Types.ObjectId.isValid(user.businessId.toString())) {
+            const ownerFallback = await User.findOne({ _id: user.businessId, userType: 'owner' });
+            if (ownerFallback) {
+              ownerIdFromBusiness = ownerFallback._id;
+              // Staff kaydını düzeltmeye çalış: doğru businessId'yi bul ve yaz
+              const maybeBiz = await Business.findOne({ ownerId: ownerFallback._id });
+              if (maybeBiz) {
+                try { await User.findByIdAndUpdate(user._id, { businessId: maybeBiz._id }); } catch (e2) { console.error('Staff businessId düzeltme hatası:', e2); }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Owner fallback arama hata (staff):', e.message);
+        }
+      }
+      if (ownerIdFromBusiness) {
+        appointmentOwnerId = ownerIdFromBusiness;
       }
     }
 
@@ -439,6 +686,144 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
     let createdById = req.user.userId;
     if (user.userType === 'owner' && req.body.selectedStaff && req.body.selectedStaff !== 'all') {
       createdById = req.body.selectedStaff;
+    }
+
+    // Kota enforcement: Premium üyelikte aylık kota dolmuşsa veya deneme bittiyse yeni randevuyu engelle
+    // Önce deneme süresi bitti mi kesin olarak kontrol et (fail-closed)
+    const planQuotaMap = { plus: 200, pro: 400, premium: null };
+    const isBlockedAppointment = !!req.body.isBlocked;
+    // Kota/deneme kontrolünü işletme sahibine göre yap; staff için owner'ı çıkar
+    let ownerDoc = null;
+    if (user.userType === 'staff') {
+      try {
+        const bizDocForOwner = await Business.findById(user.businessId);
+        if (bizDocForOwner && bizDocForOwner.ownerId) {
+          ownerDoc = await User.findById(bizDocForOwner.ownerId);
+        } else {
+          const ownerCandidate = await User.findById(user.businessId);
+          if (ownerCandidate && ownerCandidate.userType === 'owner') {
+            ownerDoc = ownerCandidate;
+          }
+        }
+      } catch (e) {
+        console.warn('Owner çözümleme hatası (pre-enforcement):', e.message);
+      }
+      if (!ownerDoc && !isBlockedAppointment) {
+        return res.status(403).json({ error: 'İşletme sahibi bulunamadı. Lütfen işletme ayarlarınızı kontrol edin.' });
+      }
+    }
+    const enforcementTarget = ownerDoc || user;
+    const now = new Date();
+    const TRIAL_DAYS = 7;
+    const trialStartLocal = enforcementTarget.createdAt || new Date(0);
+    const trialEndsAtLocal = new Date(trialStartLocal.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    console.log('🧭 ENFORCEMENT TARGET DEBUG:', {
+      actorUserId: user._id?.toString(),
+      ownerUserId: ownerDoc?._id?.toString() || null,
+      targetUserId: enforcementTarget._id?.toString?.() || enforcementTarget._id,
+      isPremium: !!enforcementTarget.isPremium,
+      trialStart: trialStartLocal,
+      trialEndsAt: trialEndsAtLocal,
+      now
+    });
+    if (!enforcementTarget.isPremium && now >= trialEndsAtLocal && !isBlockedAppointment) {
+      console.log('🧮 ENFORCEMENT DEBUG (TRIAL FAIL-CLOSED):', {
+        actorUserId: user._id?.toString(),
+        ownerUserId: ownerDoc?._id?.toString() || null,
+        isPremium: !!enforcementTarget.isPremium,
+        trialEnded: now >= trialEndsAtLocal,
+        isBlockedAppointment,
+        decision: 'BLOCK_CREATE_APPOINTMENT'
+      });
+      return res.status(403).json({ error: 'Deneme süreniz bitti. Paket satın almadan randevu oluşturamazsınız.' });
+    }
+
+    // Üyelik süresi bitti ise randevu oluşturmayı engelle
+    try {
+      const membershipEndsAtLocal = enforcementTarget.membershipEndsAt ? new Date(enforcementTarget.membershipEndsAt) : null;
+      const membershipExpiredLocal = !!(membershipEndsAtLocal && now >= membershipEndsAtLocal);
+      if (membershipExpiredLocal && !isBlockedAppointment) {
+        console.log('🛑 ENFORCEMENT DEBUG (MEMBERSHIP EXPIRED):', {
+          actorUserId: user._id?.toString(),
+          ownerUserId: ownerDoc?._id?.toString() || null,
+          membershipEndsAt: membershipEndsAtLocal,
+          now,
+          decision: 'BLOCK_CREATE_APPOINTMENT'
+        });
+        return res.status(403).json({ error: 'Üyelik süreniz sona erdi. Paket yenilenmeden randevu oluşturamazsınız.' });
+      }
+    } catch (expErr) {
+      console.warn('Üyelik bitiş kontrol hatası:', expErr);
+    }
+
+    // Aylık kota kontrolünü ayrı bir blokta yap; hata olursa logla
+    try {
+      const effectiveMonthlyQuota = planQuotaMap[enforcementTarget.planType] ?? enforcementTarget.monthlyQuota ?? null;
+
+      if (enforcementTarget.isPremium && effectiveMonthlyQuota != null && !isBlockedAppointment) {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        let legacyOwnerId = null;
+        if (user.userType === 'owner') {
+          legacyOwnerId = user._id;
+        } else {
+          let bizDoc = null;
+          try {
+            if (user.businessId && mongoose.Types.ObjectId.isValid(user.businessId.toString())) {
+              bizDoc = await Business.findById(user.businessId);
+            }
+          } catch (e) {
+            console.warn('Business findById hata (quota count):', e.message);
+          }
+          if (bizDoc && bizDoc.ownerId && mongoose.Types.ObjectId.isValid(bizDoc.ownerId.toString())) {
+            legacyOwnerId = bizDoc.ownerId;
+          } else {
+            try {
+              if (user.businessId && mongoose.Types.ObjectId.isValid(user.businessId.toString())) {
+                const ownerCandidate = await User.findById(user.businessId);
+                if (ownerCandidate && ownerCandidate.userType === 'owner') {
+                  legacyOwnerId = ownerCandidate._id;
+                }
+              }
+            } catch (e) {
+              console.warn('Owner candidate arama hata (quota count):', e.message);
+            }
+          }
+        }
+        const legacyOwnerIdStr = legacyOwnerId?.toString?.();
+        const businessIdStr = user.businessId?.toString?.() || String(user.businessId);
+        const businessIdQuery = legacyOwnerIdStr && legacyOwnerIdStr !== businessIdStr
+          ? { $in: [user.businessId, legacyOwnerId] }
+          : user.businessId;
+        const usedCountThisMonth = await Appointment.countDocuments({
+          businessId: businessIdQuery,
+          isBlocked: false,
+          status: { $ne: 'cancelled' },
+          $or: [
+            { createdAt: { $gte: startOfMonth, $lte: endOfMonth } },
+            { $and: [
+              { createdAt: { $exists: false } },
+              { date: { $gte: startOfMonth, $lte: endOfMonth } }
+            ] }
+          ]
+        });
+        console.log('🧮 ENFORCEMENT DEBUG:', {
+          actorUserId: user._id?.toString(),
+          ownerUserId: ownerDoc?._id?.toString() || null,
+          businessId: user.businessId?.toString?.() || user.businessId,
+          planType: enforcementTarget.planType,
+          effectiveMonthlyQuota,
+          usedCountThisMonth,
+          willBlock: usedCountThisMonth >= effectiveMonthlyQuota
+        });
+        if (usedCountThisMonth >= effectiveMonthlyQuota) {
+          return res.status(403).json({ error: 'Aylık randevu hakkınız doldu. Lütfen paket yükseltin veya yeni dönem başlayınca tekrar deneyin.' });
+        }
+      }
+    } catch (quotaErr) {
+      console.error('Kota kontrolü sırasında hata:', quotaErr);
+      // Kota kontrolü başarısız olsa bile randevu oluşturmayı tamamen engellemeyelim
+      // Devam ederek randevuyu oluşturalım fakat hata loglansın
     }
 
     // Bloke edilmiş randevu ise gerekli alanları ayarla
@@ -470,6 +855,42 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
     
     const appointment = new Appointment(appointmentData);
     await appointment.save();
+    // Başarılı oluşturma sonrası: premium pakette aylık kullanım sayacını artır
+    try {
+      const planQuotaMap = { plus: 200, pro: 400, premium: null };
+      // Staff ise owner'ın planına göre sayaç artışı yap
+      let ownerDocForIncrement = null;
+      if (user.userType === 'staff') {
+        const bizDocForOwner2 = await Business.findById(user.businessId);
+        if (bizDocForOwner2 && bizDocForOwner2.ownerId) {
+          ownerDocForIncrement = await User.findById(bizDocForOwner2.ownerId);
+        } else {
+          const ownerCandidate2 = await User.findById(user.businessId);
+          if (ownerCandidate2 && ownerCandidate2.userType === 'owner') {
+            ownerDocForIncrement = ownerCandidate2;
+          }
+        }
+      }
+      const targetUser = ownerDocForIncrement || user;
+      const effectiveMonthlyQuotaInc = planQuotaMap[targetUser.planType] ?? targetUser.monthlyQuota ?? null;
+      const shouldIncrement = !!targetUser.isPremium && effectiveMonthlyQuotaInc != null && !appointment.isBlocked;
+      if (shouldIncrement) {
+        const now2 = new Date();
+        // Eğer sayaç ay başından bu yana resetlenmemişse basitçe 1 artır
+        await User.findByIdAndUpdate(targetUser._id, { $inc: { usedAppointmentsThisMonth: 1 }, lastResetAt: targetUser.lastResetAt || now2 });
+      }
+    } catch (incErr) {
+      console.warn('Aylık kullanım sayaç artırma hatası:', incErr);
+    }
+    console.log('✅ APPOINTMENT CREATED DEBUG:', {
+      appointmentId: appointment._id?.toString?.() || appointment._id,
+      businessId: appointment.businessId?.toString?.() || appointment.businessId,
+      userId: appointment.userId?.toString?.() || appointment.userId,
+      createdBy: appointment.createdBy?.toString?.() || appointment.createdBy,
+      isBlocked: appointment.isBlocked,
+      status: appointment.status,
+      createdAt: appointment.createdAt
+    });
     
     res.status(201).json({
       message: 'Randevu başarıyla oluşturuldu',
@@ -656,6 +1077,17 @@ app.post('/api/business', authenticateToken, async (req, res) => {
     const business = new Business(businessData);
     await business.save();
 
+    // Owner kullanıcının businessId alanını yeni oluşturulan işletmenin ID'si ile güncelle
+    try {
+      await User.findByIdAndUpdate(
+        req.user.userId,
+        { businessId: business._id },
+        { new: true }
+      );
+    } catch (e) {
+      console.error('Owner businessId güncelleme hatası:', e);
+    }
+
     res.status(201).json({
       success: true,
       message: 'İşletme bilgileri başarıyla kaydedildi',
@@ -701,8 +1133,21 @@ app.get('/api/business', authenticateToken, async (req, res) => {
         });
       }
       
-      // businessId aslında owner'ın ID'si, bu owner'ın işletme bilgilerini bul
-      business = await Business.findOne({ ownerId: user.businessId });
+      // Staff için businessId doğrudan Business._id olmalı
+      business = await Business.findById(user.businessId);
+      if (!business) {
+        // Eski kayıtlarda businessId yanlışlıkla ownerId olarak tutulmuş olabilir
+        const fallbackBiz = await Business.findOne({ ownerId: user.businessId });
+        if (fallbackBiz) {
+          business = fallbackBiz;
+          // Staff kaydını düzelt: businessId alanını gerçek Business._id ile güncelle
+          try {
+            await User.findByIdAndUpdate(user._id, { businessId: fallbackBiz._id });
+          } catch (e) {
+            console.error('Staff businessId düzeltme hatası:', e);
+          }
+        }
+      }
     }
     
     if (!business) {
@@ -2301,13 +2746,25 @@ app.post('/api/customers/add', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Bu müşteri zaten mevcut' });
     }
     
+    // BusinessId doğrulama ve düzeltme
+    let effectiveBusinessId = currentUser.businessId;
+    if (!effectiveBusinessId) {
+      if (currentUser.userType === 'owner') {
+        const biz = await Business.findOne({ ownerId: currentUser._id });
+        if (biz) {
+          effectiveBusinessId = biz._id;
+          try { await User.findByIdAndUpdate(currentUser._id, { businessId: biz._id }); } catch (e) { console.error('Owner businessId düzeltme hatası:', e); }
+        }
+      }
+    }
+
     const newCustomer = {
       id: Date.now().toString(),
       name: name.trim(),
       phone: phone.trim(),
       email: email ? email.trim() : '',
       addedBy: req.user.userId,
-      businessId: currentUser.businessId || req.user.userId, // Owner için kendi ID'si, staff için businessId
+      businessId: effectiveBusinessId,
       createdAt: new Date().toISOString()
     };
     
@@ -2322,7 +2779,9 @@ app.post('/api/customers/add', authenticateToken, async (req, res) => {
     
     // Eğer staff ise, owner'ın müşteri listesine de ekle
     if (currentUser.userType === 'staff' && currentUser.businessId) {
-      const owner = await User.findById(currentUser.businessId).select('customers');
+      const biz = await Business.findById(currentUser.businessId).select('ownerId');
+      const ownerId = biz?.ownerId;
+      const owner = ownerId ? await User.findById(ownerId).select('customers') : null;
       const ownerCustomers = owner?.customers || [];
       
       // Owner'da aynı müşteri var mı kontrol et
@@ -2333,11 +2792,13 @@ app.post('/api/customers/add', authenticateToken, async (req, res) => {
       
       if (!existingInOwner) {
         const ownerUpdatedCustomers = [...ownerCustomers, newCustomer];
-        await User.findByIdAndUpdate(
-          currentUser.businessId,
-          { customers: ownerUpdatedCustomers },
-          { new: true }
-        );
+        if (ownerId) {
+          await User.findByIdAndUpdate(
+            ownerId,
+            { customers: ownerUpdatedCustomers },
+            { new: true }
+          );
+        }
       }
     }
     
@@ -2649,6 +3110,53 @@ app.post('/api/public/store/:storeName/appointments', async (req, res) => {
       return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
     }
 
+    // Deneme süresi kontrolü: deneme bittiyse ve premium değilse randevu alma kapalı (fail-closed)
+    const now = new Date();
+    const TRIAL_DAYS = 7;
+    const trialStartLocal = storeOwner.createdAt || new Date(0);
+    const trialEndsAtLocal = new Date(trialStartLocal.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    if (!storeOwner.isPremium && now >= trialEndsAtLocal) {
+      return res.status(403).json({ error: 'Mağaza için deneme süresi sona erdi. Paket satın alınmadan randevu alınamaz.' });
+    }
+
+    // Üyelik süresi kontrolü: üyelik bitti ise randevu alma kapalı
+    try {
+      const membershipEndsAtLocal = storeOwner.membershipEndsAt ? new Date(storeOwner.membershipEndsAt) : null;
+      const membershipExpiredLocal = !!(membershipEndsAtLocal && now >= membershipEndsAtLocal);
+      if (membershipExpiredLocal) {
+        return res.status(403).json({ error: 'Mağaza üyeliği sona erdi. Paket yenilenmeden randevu alınamaz.' });
+      }
+    } catch (expErr) {
+      console.warn('Public membership expiry kontrol hatası:', expErr);
+    }
+
+    // Kota enforcement: aylık kota dolmuşsa randevu alma kapalı
+    try {
+      const planQuotaMap = { plus: 200, pro: 400, premium: null };
+      const effectiveMonthlyQuota = planQuotaMap[storeOwner.planType] ?? storeOwner.monthlyQuota ?? null;
+      if (storeOwner.isPremium && effectiveMonthlyQuota != null) {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        const usedCountThisMonth = await Appointment.countDocuments({
+          businessId: storeOwner.businessId._id,
+          isBlocked: false,
+          status: { $ne: 'cancelled' },
+          $or: [
+            { createdAt: { $gte: startOfMonth, $lte: endOfMonth } },
+            { $and: [
+              { createdAt: { $exists: false } },
+              { date: { $gte: startOfMonth, $lte: endOfMonth } }
+            ] }
+          ]
+        });
+        if (usedCountThisMonth >= effectiveMonthlyQuota) {
+          return res.status(403).json({ error: 'Aylık randevu hakkı doldu. Yeni dönem başlayınca tekrar deneyin.' });
+        }
+      }
+    } catch (quotaErr) {
+      console.warn('Public kota kontrol hatası:', quotaErr);
+    }
+
     // Hizmeti kontrol et
     const service = storeOwner.services.find(s => 
       (s.id || s._id).toString() === serviceId
@@ -2705,6 +3213,18 @@ app.post('/api/public/store/:storeName/appointments', async (req, res) => {
     });
 
     await appointment.save();
+
+    // Sayaç artırma: premium ve kota sınırlı ise basit sayaç artışı
+    try {
+      const planQuotaMapInc = { plus: 200, pro: 400, premium: null };
+      const effectiveMonthlyQuotaInc = planQuotaMapInc[storeOwner.planType] ?? storeOwner.monthlyQuota ?? null;
+      const shouldIncrement = !!storeOwner.isPremium && effectiveMonthlyQuotaInc != null;
+      if (shouldIncrement) {
+        await User.findByIdAndUpdate(storeOwner._id, { $inc: { usedAppointmentsThisMonth: 1 }, lastResetAt: storeOwner.lastResetAt || new Date() });
+      }
+    } catch (incErr) {
+      console.warn('Public aylık kullanım sayaç artırma hatası:', incErr);
+    }
 
     res.status(201).json({
       message: 'Randevu başarıyla oluşturuldu',
@@ -2946,14 +3466,31 @@ app.get('/api/public/store/:storeName/working-hours', async (req, res) => {
       return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
     }
 
-    // BusinessId kontrolü
+    // BusinessId kontrolü: Business._id olmalı, gerektiğinde düzelt
+    let business = null;
     if (!storeOwner.businessId) {
-      storeOwner.businessId = storeOwner._id;
-      await storeOwner.save();
+      business = await Business.findOne({ ownerId: storeOwner._id });
+      if (business) {
+        try {
+          await User.findByIdAndUpdate(storeOwner._id, { businessId: business._id });
+        } catch (e) {
+          console.error('Public working-hours owner businessId güncelleme hatası:', e);
+        }
+      } else {
+        return res.status(404).json({ error: 'İşletme bilgileri bulunamadı' });
+      }
+    } else {
+      business = await Business.findById(storeOwner.businessId);
+      if (!business) {
+        const fallbackBiz = await Business.findOne({ ownerId: storeOwner._id });
+        if (fallbackBiz) {
+          business = fallbackBiz;
+          try { await User.findByIdAndUpdate(storeOwner._id, { businessId: fallbackBiz._id }); } catch (e) { console.error('Public working-hours düzeltme hatası:', e); }
+        } else {
+          return res.status(404).json({ error: 'İşletme bilgileri bulunamadı' });
+        }
+      }
     }
-
-    // Business kaydını kontrol et
-    let business = await Business.findById(storeOwner.businessId);
     
     let workingHours = null;
     let serviceCreatorId = null;
