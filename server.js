@@ -12,6 +12,7 @@ const Appointment = require('./models/Appointment');
 const Business = require('./models/Business');
 const BlockedTime = require('./models/BlockedTime');
 const AppointmentRequest = require('./models/AppointmentRequest');
+const ContactMessage = require('./models/ContactMessage');
 require('dotenv').config();
 
 const app = express();
@@ -239,13 +240,15 @@ app.post('/api/auth/login', async (req, res) => {
     // Kullanıcıyı bul
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(401).json({ error: 'Geçersiz e-posta veya şifre' });
+      // Daha açıklayıcı geri bildirim: e-posta bulunamadı
+      return res.status(404).json({ error: 'E-posta bulunamadı' });
     }
 
     // Şifreyi kontrol et
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Geçersiz e-posta veya şifre' });
+      // Daha açıklayıcı geri bildirim: şifre yanlış
+      return res.status(401).json({ error: 'Şifre yanlış' });
     }
 
     // JWT token oluştur - Türkçe karakterleri güvenli hale getir
@@ -3677,6 +3680,30 @@ app.get('/api/geocode', async (req, res) => {
     }
   } catch (error) {
     console.error('Geocoding proxy hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// İletişim mesajı oluştur (public endpoint)
+app.post('/api/contact-messages', async (req, res) => {
+  try {
+    const { name, email, phone, message } = req.body;
+    if (!name || !message) {
+      return res.status(400).json({ error: 'Ad ve mesaj zorunludur' });
+    }
+
+    const contactMessage = new ContactMessage({
+      name: (name || '').trim(),
+      email: (email || '').trim(),
+      phone: (phone || '').trim(),
+      message: (message || '').trim(),
+    });
+
+    await contactMessage.save();
+
+    res.status(201).json({ success: true, message: 'Mesajınız alındı', id: contactMessage._id });
+  } catch (error) {
+    console.error('İletişim mesajı kaydetme hatası:', error);
     res.status(500).json({ error: 'Sunucu hatası' });
   }
 });
