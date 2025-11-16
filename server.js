@@ -29,7 +29,12 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://planyapp.com.tr',
+    /^https?:\/\/.*\.vercel\.app$/
+  ],
   credentials: true
 }));
 app.use(morgan('combined'));
