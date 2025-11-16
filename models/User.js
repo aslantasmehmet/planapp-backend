@@ -176,6 +176,55 @@ const userSchema = new mongoose.Schema({
       type: Date,
       default: Date.now
     }
+  },
+  // Premium üyelik ve deneme süresi bilgileri
+  isPremium: {
+    type: Boolean,
+    default: false
+  },
+  // Satın alınan paket bilgileri
+  planType: {
+    type: String,
+    enum: ['plus', 'pro', 'premium'],
+    default: null
+  },
+  planPeriod: {
+    type: String,
+    enum: ['monthly', 'annual'],
+    default: 'monthly'
+  },
+  trialStart: {
+    type: Date,
+    default: Date.now
+  },
+  premiumStartedAt: {
+    type: Date,
+    default: null
+  },
+  membershipStartedAt: {
+    type: Date,
+    default: null
+  },
+  membershipEndsAt: {
+    type: Date,
+    default: null
+  },
+  membershipMonths: {
+    type: Number,
+    default: 0
+  },
+  // İleride randevu limit kontrolü için kullanılacak alanlar
+  monthlyQuota: {
+    type: Number,
+    default: null // null => sınırsız
+  },
+  usedAppointmentsThisMonth: {
+    type: Number,
+    default: 0
+  },
+  lastResetAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
