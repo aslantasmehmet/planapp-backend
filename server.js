@@ -28,33 +28,9 @@ mongoose.connect(process.env.MONGODB_URI)
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-// CORS configuration: allow local dev and Vercel preview/prod domains
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:3001',
-  process.env.FRONTEND_URL,
-  process.env.FRONTEND_PREVIEW_URL,
-  'https://planapp-frontend.vercel.app',
-  'https://planapp-frontend-git-main-aslantasmehmets-projects.vercel.app',
-];
-
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow non-browser or same-origin requests
-    if (!origin) return callback(null, true);
-
-    const dynamicAllowed = allowedOrigins.filter(Boolean);
-    const vercelPreviewMatch = /^https:\/\/planapp-frontend.*\.vercel\.app$/.test(origin);
-    const isAllowed = dynamicAllowed.includes(origin) || vercelPreviewMatch;
-
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      callback(new Error(`CORS blocked for origin: ${origin}`));
-    }
-  },
-  credentials: true,
+  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  credentials: true
 }));
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' })); // Base64 resimler için limit artırıldı
@@ -261,21 +237,22 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'E-posta ve şifre gereklidir' });
     }
 
+    // E-postayı normalize et
+    const emailNorm = String(email).toLowerCase().trim();
+
     // Kullanıcıyı bul
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: emailNorm });
     if (!user) {
-      // Daha açıklayıcı geri bildirim: e-posta bulunamadı
       return res.status(404).json({ error: 'E-posta bulunamadı' });
     }
 
-    // Şifreyi kontrol et
+    // Şifreyi kontrol et (hata güvenli)
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      // Daha açıklayıcı geri bildirim: şifre yanlış
       return res.status(401).json({ error: 'Şifre yanlış' });
     }
 
-    // JWT token oluştur - Türkçe karakterleri güvenli hale getir
+    // JWT token oluştur
     const token = jwt.sign(
       { 
         userId: user._id.toString(), 
@@ -299,7 +276,7 @@ app.post('/api/auth/login', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Giriş hatası:', error);
+    console.error('Giriş hatası:', error?.message || error);
     res.status(500).json({ error: 'Sunucu hatası' });
   }
 });
