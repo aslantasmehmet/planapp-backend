@@ -28,9 +28,33 @@ mongoose.connect(process.env.MONGODB_URI)
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
+// CORS configuration: allow local dev and Vercel preview/prod domains
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  process.env.FRONTEND_URL,
+  process.env.FRONTEND_PREVIEW_URL,
+  'https://planapp-frontend.vercel.app',
+  'https://planapp-frontend-git-main-aslantasmehmets-projects.vercel.app',
+];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
-  credentials: true
+  origin: (origin, callback) => {
+    // Allow non-browser or same-origin requests
+    if (!origin) return callback(null, true);
+
+    const dynamicAllowed = allowedOrigins.filter(Boolean);
+    const vercelPreviewMatch = /^https:\/\/planapp-frontend.*\.vercel\.app$/.test(origin);
+    const isAllowed = dynamicAllowed.includes(origin) || vercelPreviewMatch;
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    }
+  },
+  credentials: true,
 }));
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' })); // Base64 resimler için limit artırıldı
