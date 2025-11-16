@@ -245,6 +245,12 @@ userSchema.pre('save', async function(next) {
 
 // Şifre karşılaştırma metodu
 userSchema.methods.comparePassword = async function(candidatePassword) {
-  return bcrypt.compare(candidatePassword, this.password);
+  try {
+    if (!this.password) return false;
+    return await bcrypt.compare(candidatePassword, this.password);
+  } catch (error) {
+    console.warn('comparePassword hata:', error?.message || error);
+    return false;
+  }
 };
 module.exports = mongoose.model('User', userSchema);
