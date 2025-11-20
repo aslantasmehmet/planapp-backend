@@ -6,6 +6,10 @@ const morgan = require('morgan');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
+const crypto = require('crypto');
 
 const User = require('./models/User');
 const Appointment = require('./models/Appointment');
@@ -13,11 +17,25 @@ const Business = require('./models/Business');
 const BlockedTime = require('./models/BlockedTime');
 const AppointmentRequest = require('./models/AppointmentRequest');
 const ContactMessage = require('./models/ContactMessage');
+const SmsLog = require('./models/SmsLog');
+const OtpCode = require('./models/OtpCode');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+// Proxy arkasında doğru protokol/host bilgisi için
+app.set('trust proxy', true);
+// Basit bellek içi kısa-link depolama
+const shortLinks = new Map();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const MUTLUCELL_USERNAME = process.env.MUTLUCELL_USERNAME || '';
+const MUTLUCELL_PASSWORD = process.env.MUTLUCELL_PASSWORD || '';
+const MUTLUCELL_ORIGINATOR = process.env.MUTLUCELL_ORIGINATOR || '';
+const MUTLUCELL_API_URL = process.env.MUTLUCELL_API_URL || 'https://smsgw.mutlucell.com/xmlpost.asp';
+const MUTLUCELL_VALIDITY = process.env.MUTLUCELL_VALIDITY || '1440'; // dakika cinsinden
+const MUTLUCELL_ALLOW_INSECURE_TLS = String(process.env.MUTLUCELL_ALLOW_INSECURE_TLS || 'false').toLowerCase() === 'true';
+// Kısa linkler için public base URL (örn: https://planyapp.com.tr)
+const SHORTLINK_BASE_URL = process.env.SHORTLINK_BASE_URL || '';
 
 // MongoDB bağlantısı
 mongoose.connect(process.env.MONGODB_URI)
@@ -76,6 +94,39 @@ app.get('/api/health', (req, res) => {
   } catch (error) {
     console.error('Health endpoint hatası:', error);
     res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Sunucunun dış (egress) IP’sini öğrenmek için yardımcı endpoint
+app.get('/api/network/public-ip', async (req, res) => {
+  try {
+    const options = {
+      hostname: 'api.ipify.org',
+      port: 443,
+      path: '/?format=json',
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json'
+      }
+    };
+
+    const r = https.request(options, (resp) => {
+      let data = '';
+      resp.on('data', (chunk) => { data += chunk; });
+      resp.on('end', () => {
+        try {
+          const parsed = JSON.parse(data || '{}');
+          if (parsed && parsed.ip) return res.json({ ip: parsed.ip });
+          return res.status(500).json({ error: 'parse_failed', raw: data });
+        } catch (e) {
+          return res.status(500).json({ error: 'parse_failed', message: e.message, raw: data });
+        }
+      });
+    });
+    r.on('error', (e) => res.status(500).json({ error: 'request_error', message: e.message }));
+    r.end();
+  } catch (err) {
+    return res.status(500).json({ error: 'server_error', message: err.message });
   }
 });
 
@@ -177,6 +228,12 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Bu e-posta adresi ile zaten bir hesap var' });
     }
 
+    // Telefon zaten var mı kontrol et
+    const existingPhoneUser = await User.findOne({ phone });
+    if (existingPhoneUser) {
+      return res.status(400).json({ error: 'Bu telefon numarası ile zaten bir hesap var' });
+    }
+
     // Yeni kullanıcı oluştur
     const userData = { 
       name, 
@@ -228,6 +285,200 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
+// Kayıt OTP başlatma (telefon doğrulaması olmadan kayıt tamamlanmaz)
+app.post('/api/auth/register-init', async (req, res) => {
+  try {
+    const { password, name, email, phone } = req.body || {};
+
+    // Validasyon
+    if (!password || !name || !email || !phone) {
+      return res.status(400).json({ error: 'Ad, e-posta, telefon ve şifre alanları gereklidir' });
+    }
+
+    const emailNorm = String(email).toLowerCase().trim();
+    const existingUser = await User.findOne({ email: emailNorm });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Bu e-posta adresi ile zaten bir hesap var' });
+    }
+
+    // Telefon zaten var mı kontrol et (ham girişe göre)
+    const phoneStr = String(phone).trim();
+    const existingPhoneUser = await User.findOne({ phone: phoneStr });
+    if (existingPhoneUser) {
+      return res.status(400).json({ error: 'Bu telefon numarası ile zaten bir hesap var' });
+    }
+
+    // Msisdn normalizasyonu (0 başlı 11 hane -> 90 ile)
+    const normalizeMsisdn = (ph) => {
+      try {
+        const digits = String(ph).replace(/\D+/g, '');
+        if (!digits) return '';
+        if (digits.startsWith('0')) return '90' + digits.slice(1);
+        return digits;
+      } catch (_) {
+        return String(ph || '').trim();
+      }
+    };
+    const msisdn = normalizeMsisdn(phone);
+    if (!msisdn || msisdn.length < 10) {
+      return res.status(400).json({ error: 'Telefon numarası geçerli değil' });
+    }
+
+    // 6 haneli OTP üret (5 dk geçerli)
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const otp = await OtpCode.create({
+      user: null,
+      phone: msisdn,
+      code,
+      status: 'pending',
+      expiresAt,
+      purpose: 'register',
+      payload: {
+        name,
+        email: emailNorm,
+        phoneRaw: String(phone),
+        password: String(password),
+        userType: 'owner',
+        isPremium: false,
+        trialStart: new Date(),
+      },
+    });
+
+    const msg = `Kayıt doğrulama kodunuz: ${code}\nKod 5 dakika geçerlidir.\nPaylaşmayınız.`;
+    let smsError = null;
+    const providerConfigured = (MUTLUCELL_USERNAME && MUTLUCELL_PASSWORD);
+    const originator = MUTLUCELL_ORIGINATOR;
+    const validForParam = MUTLUCELL_VALIDITY;
+    if (providerConfigured) {
+      const sendRes = await sendSms({
+        dest: msisdn,
+        msg,
+        originator,
+        validFor: validForParam,
+        customId: `reg_${otp._id.toString()}`,
+      });
+      if (!sendRes.success) {
+        smsError = sendRes.error || 'SMS gönderilemedi';
+      }
+    } else {
+      smsError = 'SMS sağlayıcı yapılandırılmamış';
+    }
+
+    const masked = msisdn.replace(/(\d{2})(\d{3})(\d{2})(\d{2})(\d{2})/, (_, c1, c2, c3, c4, c5) => `${c1}${c2[0]}**${c3}**${c4}${c5 ? '**' : ''}`);
+    if (smsError) {
+      return res.status(500).json({ error: `OTP SMS gönderimi başarısız: ${smsError}` });
+    }
+
+    return res.json({
+      message: 'Kayıt için OTP gönderildi',
+      twoFactorRequired: true,
+      otpId: otp._id,
+      maskedPhone: masked || null,
+    });
+  } catch (error) {
+    console.error('Kayıt OTP başlatma hatası:', error?.message || error);
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Kayıt OTP doğrulama ve kullanıcı oluşturma
+app.post('/api/auth/register-verify', async (req, res) => {
+  try {
+    const { otpId, code } = req.body || {};
+    if (!otpId || !code) {
+      return res.status(400).json({ error: 'OTP kimliği ve kod gereklidir' });
+    }
+
+    const otp = await OtpCode.findById(otpId);
+    if (!otp) {
+      return res.status(404).json({ error: 'OTP kaydı bulunamadı' });
+    }
+    if (otp.purpose !== 'register') {
+      return res.status(400).json({ error: 'OTP kayıt akışı için değil' });
+    }
+    if (otp.status !== 'pending') {
+      return res.status(400).json({ error: 'OTP kullanılabilir durumda değil' });
+    }
+    if (otp.expiresAt < new Date()) {
+      otp.status = 'expired';
+      await otp.save();
+      return res.status(400).json({ error: 'Kodun süresi doldu' });
+    }
+    if (String(otp.code) !== String(code)) {
+      otp.attempts = (otp.attempts || 0) + 1;
+      await otp.save();
+      return res.status(401).json({ error: 'Kod yanlış' });
+    }
+
+    // E-posta tekrar kontrolü
+    const payload = otp.payload || {};
+    const existingUser = await User.findOne({ email: payload.email });
+    if (existingUser) {
+      otp.status = 'expired';
+      await otp.save();
+      return res.status(400).json({ error: 'Bu e-posta ile zaten hesap var' });
+    }
+
+    // Telefon tekrar kontrolü
+    const existingPhoneUser = await User.findOne({ phone: payload.phoneRaw });
+    if (existingPhoneUser) {
+      otp.status = 'expired';
+      await otp.save();
+      return res.status(400).json({ error: 'Bu telefon numarası ile zaten hesap var' });
+    }
+
+    // Kullanıcı oluştur
+    const userData = {
+      name: payload.name,
+      email: payload.email,
+      phone: payload.phoneRaw,
+      password: payload.password,
+      userType: payload.userType || 'owner',
+      isPremium: payload.isPremium ?? false,
+      trialStart: payload.trialStart || new Date(),
+    };
+    const user = new User(userData);
+    await user.save();
+
+    if (user.userType === 'owner') {
+      user.businessId = user._id;
+      await user.save();
+    }
+
+    otp.status = 'verified';
+    otp.user = user._id;
+    await otp.save();
+
+    const token = jwt.sign(
+      {
+        userId: user._id.toString(),
+        email: user.email,
+        userType: user.userType,
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return res.status(201).json({
+      message: 'Kayıt tamamlandı',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        userType: user.userType,
+        businessId: user.businessId,
+        isPremium: user.isPremium,
+        trialStart: user.trialStart,
+      },
+    });
+  } catch (error) {
+    console.error('Kayıt OTP doğrulama hatası:', error?.message || error);
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
 
 
 
@@ -237,39 +488,135 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validasyon
     if (!email || !password) {
       return res.status(400).json({ error: 'E-posta ve şifre gereklidir' });
     }
 
-    // E-postayı normalize et
     const emailNorm = String(email).toLowerCase().trim();
-
-    // Kullanıcıyı bul
     const user = await User.findOne({ email: emailNorm });
     if (!user) {
       return res.status(404).json({ error: 'E-posta bulunamadı' });
     }
 
-    // Şifreyi kontrol et (hata güvenli)
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'Şifre yanlış' });
     }
 
-    // JWT token oluştur
+    // 2FA: Telefon numarası kontrolü
+    const normalizeMsisdn = (phone) => {
+      try {
+        const digits = String(phone).replace(/\D+/g, '');
+        if (!digits) return '';
+        if (digits.startsWith('0')) return '90' + digits.slice(1);
+        return digits;
+      } catch (_) {
+        return String(phone || '').trim();
+      }
+    };
+    const msisdn = normalizeMsisdn(user.phone);
+    if (!msisdn || msisdn.length < 10) {
+      return res.status(400).json({ error: '2FA için geçerli bir telefon numarası gerekli' });
+    }
+
+    // 6 haneli OTP üret ve kaydet (5 dk geçerli)
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const otp = await OtpCode.create({
+      user: user._id,
+      phone: msisdn,
+      code,
+      status: 'pending',
+      expiresAt,
+    });
+
+    // SMS içeriği
+    const msg = `Giriş doğrulama kodunuz: ${code}\nKod 5 dakika geçerlidir.\nPaylaşmayınız.`;
+    let smsError = null;
+    const providerConfigured = (MUTLUCELL_USERNAME && MUTLUCELL_PASSWORD);
+    const originator = MUTLUCELL_ORIGINATOR;
+    const validForParam = MUTLUCELL_VALIDITY;
+    if (providerConfigured) {
+      const sendRes = await sendSms({
+        dest: msisdn,
+        msg,
+        originator,
+        validFor: validForParam,
+        customId: `otp_${otp._id.toString()}`,
+      });
+      if (!sendRes.success) {
+        smsError = sendRes.error || 'SMS gönderilemedi';
+      }
+    } else {
+      smsError = 'SMS sağlayıcı yapılandırılmamış';
+    }
+
+    // Masked phone
+    const masked = msisdn.replace(/(\d{2})(\d{3})(\d{2})(\d{2})(\d{2})/, (_, c1, c2, c3, c4, c5) => `${c1}${c2[0]}**${c3}**${c4}${c5 ? '**' : ''}`);
+
+    if (smsError) {
+      return res.status(500).json({ error: `OTP SMS gönderimi başarısız: ${smsError}` });
+    }
+
+    // Frontend’e OTP sürecini bildir
+    return res.json({
+      message: '2FA başlatıldı',
+      twoFactorRequired: true,
+      otpId: otp._id,
+      maskedPhone: masked || null,
+    });
+  } catch (error) {
+    console.error('Giriş/OTP hatası:', error?.message || error);
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// OTP doğrulama ve token oluşturma
+app.post('/api/auth/verify-otp', async (req, res) => {
+  try {
+    const { otpId, code } = req.body || {};
+    if (!otpId || !code) {
+      return res.status(400).json({ error: 'OTP kimliği ve kod gereklidir' });
+    }
+
+    const otp = await OtpCode.findById(otpId).populate('user');
+    if (!otp) {
+      return res.status(404).json({ error: 'OTP kaydı bulunamadı' });
+    }
+    if (otp.status !== 'pending') {
+      return res.status(400).json({ error: 'OTP kullanılabilir durumda değil' });
+    }
+    if (otp.expiresAt < new Date()) {
+      otp.status = 'expired';
+      await otp.save();
+      return res.status(400).json({ error: 'Kodun süresi doldu' });
+    }
+    if (String(otp.code) !== String(code)) {
+      otp.attempts = (otp.attempts || 0) + 1;
+      await otp.save();
+      return res.status(401).json({ error: 'Kod yanlış' });
+    }
+
+    otp.status = 'verified';
+    await otp.save();
+
+    const user = otp.user;
+    if (!user) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+    }
+
     const token = jwt.sign(
-      { 
-        userId: user._id.toString(), 
+      {
+        userId: user._id.toString(),
         email: user.email,
-        userType: user.userType
+        userType: user.userType,
       },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.json({
-      message: 'Giriş başarılı',
+    return res.json({
+      message: 'OTP doğrulandı',
       token,
       user: {
         id: user._id,
@@ -277,12 +624,12 @@ app.post('/api/auth/login', async (req, res) => {
         email: user.email,
         phone: user.phone,
         userType: user.userType,
-        businessId: user.businessId
-      }
+        businessId: user.businessId,
+      },
     });
   } catch (error) {
-    console.error('Giriş hatası:', error?.message || error);
-    res.status(500).json({ error: 'Sunucu hatası' });
+    console.error('OTP doğrulama hatası:', error?.message || error);
+    return res.status(500).json({ error: 'Sunucu hatası' });
   }
 });
 
@@ -911,6 +1258,82 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
   }
 });
 
+// SMS gönder (Mutlucell entegrasyonu)
+app.post('/api/sms/send', authenticateToken, async (req, res) => {
+  try {
+    const { to, message, appointmentId, sendAt, validFor, sourceAddr, datacoding } = req.body || {};
+    if (!to || !message) {
+      return res.status(400).json({ error: 'Telefon numarası ve mesaj gereklidir' });
+    }
+
+    // Kullanıcıyı yükle ve businessId’yi al
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+    }
+
+    // Basit normalizasyon: rakam olmayan karakterleri kaldır, 0 ile başlıyorsa 90 ile değiştir
+    const normalizeMsisdn = (phone) => {
+      try {
+        const digits = String(phone).replace(/\D+/g, '');
+        if (!digits) return '';
+        if (digits.startsWith('0')) return '90' + digits.slice(1);
+        return digits;
+      } catch (_) {
+        return String(phone || '').trim();
+      }
+    };
+
+    const msisdn = normalizeMsisdn(to);
+    if (msisdn.length < 10) {
+      return res.status(400).json({ error: 'Geçersiz telefon numarası' });
+    }
+
+    let log = new SmsLog({
+      businessId: user.businessId,
+      userId: user._id,
+      appointmentId: appointmentId || null,
+      msisdn,
+      message,
+      status: 'queued',
+      sentAt: new Date(),
+    });
+    await log.save();
+
+    // Mutlucell ile gönderim (kimlik bilgileri varsa)
+    const providerConfigured = (MUTLUCELL_USERNAME && MUTLUCELL_PASSWORD);
+    const originator = (sourceAddr || MUTLUCELL_ORIGINATOR);
+    const validForParam = (validFor || MUTLUCELL_VALIDITY);
+    if (providerConfigured) {
+      const result = await sendSms({
+        dest: msisdn,
+        msg: message,
+        originator,
+        validFor: validForParam,
+        sendAt,
+        customId: appointmentId || undefined,
+        datacoding,
+      });
+      if (result.success) {
+        log.status = 'sent';
+        log.providerMessageId = result.providerMessageId;
+        log.deliveredAt = null; // DLR entegrasyonu eklenince güncellenecek
+      } else {
+        log.status = 'failed';
+        log.error = result.error;
+      }
+      await log.save();
+      return res.json({ success: result.success, logId: log._id, providerMessageId: log.providerMessageId, error: log.error });
+    }
+
+    // Kimlik bilgileri yoksa yalnızca logla
+    return res.json({ success: true, logId: log._id, note: 'SMS provider configured değil; mesaj yalnızca loglandı.' });
+  } catch (err) {
+    console.error('SMS gönderim hatası:', err);
+    return res.status(500).json({ error: 'SMS gönderilirken sunucu hatası' });
+  }
+});
+
 // Randevu güncelle
 app.put('/api/appointments/:id', authenticateToken, async (req, res) => {
   try {
@@ -1058,7 +1481,7 @@ app.get('/api/appointments/today', authenticateToken, async (req, res) => {
 // İşletme bilgileri oluştur
 app.post('/api/business', authenticateToken, async (req, res) => {
   try {
-    const { name, address, phone, email, businessType, description, workingHours } = req.body;
+    const { name, address, phone, email, businessType, description, workingHours, locationLat, locationLon, locationVerified, locationMethod } = req.body;
 
     // Validasyon
     if (!name || !address || !phone || !businessType) {
@@ -1080,7 +1503,12 @@ app.post('/api/business', authenticateToken, async (req, res) => {
       businessType,
       description,
       workingHours,
-      ownerId: req.user.userId
+      ownerId: req.user.userId,
+      // Konum alanları isteğe bağlı
+      locationLat: typeof locationLat === 'number' ? locationLat : undefined,
+      locationLon: typeof locationLon === 'number' ? locationLon : undefined,
+      locationVerified: typeof locationVerified === 'boolean' ? locationVerified : false,
+      locationMethod: typeof locationMethod === 'string' ? locationMethod : undefined
     };
     
     const business = new Business(businessData);
@@ -1108,7 +1536,11 @@ app.post('/api/business', authenticateToken, async (req, res) => {
         email: business.email,
         businessType: business.businessType,
         description: business.description,
-        workingHours: business.workingHours
+        workingHours: business.workingHours,
+        locationLat: business.locationLat,
+        locationLon: business.locationLon,
+        locationVerified: business.locationVerified,
+        locationMethod: business.locationMethod
       }
     });
   } catch (error) {
@@ -1179,7 +1611,11 @@ app.get('/api/business', authenticateToken, async (req, res) => {
         logo: business.logo,
         workingHours: business.workingHours,
         images: business.images || [],
-        isActive: business.isActive
+        isActive: business.isActive,
+        locationLat: business.locationLat,
+        locationLon: business.locationLon,
+        locationVerified: business.locationVerified,
+        locationMethod: business.locationMethod
       }
     });
   } catch (error) {
@@ -1197,7 +1633,7 @@ app.get('/api/business', authenticateToken, async (req, res) => {
 // İşletme bilgilerini güncelle
 app.put('/api/business', authenticateToken, async (req, res) => {
   try {
-    const { name, address, phone, email, businessType, description, workingHours } = req.body;
+    const { name, address, phone, email, businessType, description, workingHours, locationLat, locationLon, locationVerified, locationMethod } = req.body;
 
     const business = await Business.findOne({ ownerId: req.user.userId });
     
@@ -1213,6 +1649,11 @@ app.put('/api/business', authenticateToken, async (req, res) => {
     if (businessType) business.businessType = businessType;
     if (description) business.description = description;
     if (workingHours) business.workingHours = workingHours;
+    // Konum alanlarını güncelle
+    if (typeof locationLat === 'number') business.locationLat = locationLat;
+    if (typeof locationLon === 'number') business.locationLon = locationLon;
+    if (typeof locationVerified === 'boolean') business.locationVerified = locationVerified;
+    if (typeof locationMethod === 'string') business.locationMethod = locationMethod;
 
     await business.save();
 
@@ -1227,7 +1668,11 @@ app.put('/api/business', authenticateToken, async (req, res) => {
         email: business.email,
         businessType: business.businessType,
         description: business.description,
-        workingHours: business.workingHours
+        workingHours: business.workingHours,
+        locationLat: business.locationLat,
+        locationLon: business.locationLon,
+        locationVerified: business.locationVerified,
+        locationMethod: business.locationMethod
       }
     });
   } catch (error) {
@@ -1483,6 +1928,56 @@ app.post('/api/staff', authenticateToken, async (req, res) => {
     
     const staff = new User(staffData);
     await staff.save();
+
+    // Personel oluşturuldu: giriş bilgilerini SMS ile ilet
+    try {
+      const normalizeMsisdn = (raw) => {
+        if (!raw || typeof raw !== 'string') return '';
+        const digits = raw.replace(/\D/g, '');
+        if (!digits) return '';
+        let msisdn = digits;
+        if (msisdn.startsWith('0')) msisdn = msisdn.slice(1);
+        if (msisdn.startsWith('90')) msisdn = msisdn.slice(2);
+        return `90${msisdn}`;
+      };
+      const msisdn = normalizeMsisdn(phone);
+      let businessName = '';
+      try {
+        const biz = await Business.findById(owner.businessId).lean();
+        businessName = biz?.name || '';
+      } catch (_) {}
+      const intro = businessName ? `${businessName} için ` : '';
+      // Mesaj markasını "Planyapp" ve vurgu sırasını şifre önce olacak şekilde güncelle
+      const msg = `Merhaba ${name},Planyapp giriş şifreniz: ${password}\nGiriş e-postanız: ${email}`;
+      if (msisdn.length >= 12) {
+        const smsLog = new SmsLog({
+          businessId: owner.businessId,
+          userId: ownerId,
+          msisdn,
+          message: msg,
+          status: 'queued'
+        });
+        await smsLog.save();
+        const providerConfigured = (MUTLUCELL_USERNAME && MUTLUCELL_PASSWORD);
+        let result = { success: false, error: 'SMS provider not configured' };
+        if (providerConfigured) {
+          const originator = MUTLUCELL_ORIGINATOR;
+          const validForParam = MUTLUCELL_VALIDITY;
+          result = await sendSms({ dest: msisdn, msg, originator, validFor: validForParam });
+        }
+        if (result?.success) {
+          smsLog.status = 'sent';
+          smsLog.providerMessageId = result.providerMessageId || undefined;
+          smsLog.sentAt = new Date();
+        } else {
+          smsLog.status = 'failed';
+          smsLog.error = result?.error || 'SMS gönderimi başarısız';
+        }
+        await smsLog.save();
+      }
+    } catch (smsErr) {
+      console.warn('Personel SMS gönderiminde hata:', smsErr?.message || smsErr);
+    }
 
     res.status(201).json({
       message: 'Personel başarıyla eklendi',
@@ -3661,33 +4156,220 @@ app.post('/api/public/store/:storeName/appointment-request', async (req, res) =>
 // Geocoding proxy endpoint - CORS sorununu çözmek için
 app.get('/api/geocode', async (req, res) => {
   try {
-    const { address } = req.query;
-    
+    const { address, city, district, country } = req.query;
+
     if (!address) {
       return res.status(400).json({ error: 'Adres parametresi gerekli' });
     }
 
-    // Nominatim API'sını backend'den çağır
-    const fetch = (await import('node-fetch')).default;
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=tr&limit=1&addressdetails=1`,
-      {
-        headers: {
-          'User-Agent': 'PlanApp/1.0 (contact@planapp.com)'
-        }
+    // Küçük TR normalizasyonu
+    const expandAbbr = (s = '') => String(s)
+      .replace(/\bmah\.?\b/gi, 'Mahallesi')
+      .replace(/\bcd\.?\b/gi, 'Caddesi')
+      .replace(/\bcad\.?\b/gi, 'Caddesi')
+      .replace(/\bcadd\.?\b/gi, 'Caddesi')
+      .replace(/\bsk\.?\b/gi, 'Sokak')
+      .replace(/\bblv\.?\b/gi, 'Bulvarı')
+      .replace(/\bapt\.?\b/gi, 'Apartmanı')
+      .replace(/\bno\s*:?/gi, 'No ');
+    const cleanSpaces = (s = '') => String(s).replace(/,\s*/g, ', ').replace(/\s{2,}/g, ' ').trim();
+    const addr = cleanSpaces(expandAbbr(String(address)));
+    const countryName = cleanSpaces(country || 'Türkiye');
+
+    // Adresten house_number ve street çıkar
+    const parseStreetHouse = (s) => {
+      const input = String(s || '');
+      const noMatch = input.match(/\bNo\s*:?\s*([0-9]+(?:\/[0-9]+)?)\b/i);
+      const house_number = noMatch ? noMatch[1] : '';
+      let street = input;
+      if (noMatch) street = street.replace(noMatch[0], '').trim();
+      const streetMatch = street.match(/([^,\n]*?(?:Caddesi|Cad\.?|Cd\.?|Sokak|Sk\.?|Bulvarı|Blv\.?))/i);
+      if (streetMatch) {
+        street = cleanSpaces(streetMatch[1]);
+      } else {
+        // İlk satır veya ilk virgüle kadar olan kısım
+        street = cleanSpaces(street.split(/\n|,/)[0]);
       }
-    );
-    
-    if (response.ok) {
-      const data = await response.json();
-      res.json(data);
-    } else {
-      res.status(response.status).json({ error: 'Geocoding API hatası' });
+      return { street, house_number };
+    };
+    const { street, house_number } = parseStreetHouse(addr);
+
+    // Yapılandırılmış arama: şehir/ilçe bilgisi kullanarak sonuçları sınırla
+    const params = new URLSearchParams();
+    params.set('format', 'json');
+    params.set('accept-language', 'tr');
+    params.set('countrycodes', 'tr');
+    params.set('limit', '5');
+    params.set('addressdetails', '1');
+    params.set('dedupe', '1');
+    if (street) params.set('street', street);
+    if (house_number) params.set('house_number', house_number);
+    if (district) params.set('city', cleanSpaces(district));
+    if (city) {
+      // Türkiye için il çoğunlukla state ya da county alanına düşer
+      params.set('county', cleanSpaces(city));
+      params.set('state', cleanSpaces(city));
     }
+    params.set('country', countryName);
+
+    let pathStr = `/search?${params.toString()}`;
+
+    // Eğer yapılandırılmış arama yetersiz ise, q parametresi ile fallback yap
+    const fallbackQ = cleanSpaces([addr, district, city, countryName].filter(Boolean).join(', '));
+    const fallbackPath = `/search?format=json&accept-language=tr&q=${encodeURIComponent(fallbackQ)}&countrycodes=tr&limit=5&addressdetails=1&dedupe=1`;
+
+    const options = {
+      hostname: 'nominatim.openstreetmap.org',
+      port: 443,
+      path: pathStr,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'PlanApp/1.0 (contact@planyapp.com.tr)'
+      }
+    };
+
+    const reqGeocode = https.request(options, (resp) => {
+      let data = '';
+      resp.on('data', (chunk) => { data += chunk; });
+      resp.on('end', () => {
+        try {
+          let json = [];
+          try { json = JSON.parse(data || '[]'); } catch (_) { json = []; }
+          if (!Array.isArray(json) || json.length === 0) {
+            // Fallback: q ile arama
+            const fallbackOptions = { ...options, path: fallbackPath };
+            const r2 = https.request(fallbackOptions, (resp2) => {
+              let d2 = '';
+              resp2.on('data', (chunk) => { d2 += chunk; });
+              resp2.on('end', () => {
+                try {
+                  const j2 = JSON.parse(d2 || '[]');
+                  return res.json(j2);
+                } catch (e2) {
+                  console.error('Geocode fallback parse error:', e2);
+                  return res.status(500).json({ error: 'parse_failed', message: e2.message });
+                }
+              });
+            });
+            r2.on('error', (e2) => {
+              console.error('Geocode fallback request error:', e2);
+              return res.status(500).json({ error: 'request_error', message: e2.message });
+            });
+            r2.end();
+          } else {
+            return res.json(json);
+          }
+        } catch (e) {
+          console.error('Geocode parse error:', e);
+          res.status(500).json({ error: 'parse_failed', message: e.message });
+        }
+      });
+    });
+
+    reqGeocode.on('error', (err) => {
+      console.error('Geocode request error:', err);
+      res.status(500).json({ error: 'request_error', message: err.message });
+    });
+
+    reqGeocode.end();
   } catch (error) {
     console.error('Geocoding proxy hatası:', error);
     res.status(500).json({ error: 'Sunucu hatası' });
   }
+});
+
+// Reverse geocoding proxy endpoint - lat/lon'dan adres bilgisi üretmek için
+app.get('/api/reverse-geocode', async (req, res) => {
+  try {
+    const { lat, lon } = req.query;
+    if (!lat || !lon) {
+      return res.status(400).json({ error: 'lat_lon_required', message: 'lat ve lon parametreleri gerekli' });
+    }
+
+    const params = new URLSearchParams();
+    params.set('format', 'json');
+    params.set('accept-language', 'tr');
+    params.set('lat', String(lat));
+    params.set('lon', String(lon));
+    params.set('zoom', '18');
+    params.set('addressdetails', '1');
+
+    const options = {
+      hostname: 'nominatim.openstreetmap.org',
+      port: 443,
+      path: `/reverse?${params.toString()}`,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'PlanApp/1.0 (contact@planyapp.com.tr)'
+      }
+    };
+
+    const reqReverse = https.request(options, (resp) => {
+      let data = '';
+      resp.on('data', (chunk) => { data += chunk; });
+      resp.on('end', () => {
+        try {
+          const json = JSON.parse(data || '{}');
+          return res.json(json);
+        } catch (e) {
+          console.error('Reverse geocode parse error:', e);
+          return res.status(500).json({ error: 'parse_failed', message: e.message });
+        }
+      });
+    });
+
+    reqReverse.on('error', (err) => {
+      console.error('Reverse geocode request error:', err);
+      return res.status(500).json({ error: 'request_error', message: err.message });
+    });
+
+    reqReverse.end();
+  } catch (error) {
+    console.error('Reverse-geocode proxy hatası:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// URL kısaltma endpointi (auth gerektirir)
+app.post('/api/shorten', authenticateToken, async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Geçerli url zorunludur' });
+    }
+
+    const id = crypto.randomBytes(4).toString('hex');
+    shortLinks.set(id, url);
+
+    // Public base URL belirle: env > forwarded headers > request
+    let base = SHORTLINK_BASE_URL;
+    if (!base) {
+      const forwardedHost = req.headers['x-forwarded-host'] || req.headers['x-forwarded-server'] || req.get('host');
+      const forwardedProto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+      base = `${forwardedProto}://${forwardedHost}`;
+    }
+
+    // Dev ortamında localhost/127.0.0.1 ise kısaltmayı devre dışı bırak
+    if (!base || /localhost|127\.0\.0\.1/.test(base)) {
+      return res.json({ id: null, shortUrl: url, dev: true });
+    }
+
+    const shortUrl = new URL(`/r/${id}`, base).toString();
+    return res.json({ id, shortUrl });
+  } catch (error) {
+    console.error('Shorten error:', error);
+    res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+// Kısa link yönlendirme (public)
+app.get('/r/:id', (req, res) => {
+  const { id } = req.params;
+  const longUrl = shortLinks.get(id);
+  if (!longUrl) {
+    return res.status(404).send('Kısa link bulunamadı');
+  }
+  return res.redirect(302, longUrl);
 });
 
 // İletişim mesajı oluştur (public endpoint)
@@ -3900,3 +4582,88 @@ app.post('/api/appointments/:id/payments', authenticateToken, async (req, res) =
     return res.status(500).json({ error: 'Ödeme eklenirken sunucu hatası oluştu' });
   }
 });
+
+// Mutlucell üzerinden SMS gönderimi (XML POST)
+const sendSmsViaMutlucell = ({ dest, msg, originator, validFor, sendAt, customId }) => {
+  return new Promise((resolve) => {
+    try {
+      if (!MUTLUCELL_USERNAME || !MUTLUCELL_PASSWORD) {
+        return resolve({ success: false, error: 'MUTLUCELL credentials missing' });
+      }
+      const escapeXml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&apos;');
+      const sender = originator || MUTLUCELL_ORIGINATOR;
+      const validity = validFor || MUTLUCELL_VALIDITY; // dakika
+      const useSmsgw = String(MUTLUCELL_API_URL || '').includes('/smsgw-ws/');
+      const xml = useSmsgw
+        ? (`<?xml version="1.0" encoding="UTF-8"?>` +
+           `<smspack ka="${escapeXml(MUTLUCELL_USERNAME)}" pwd="${escapeXml(MUTLUCELL_PASSWORD)}"` +
+           (sender ? ` org="${escapeXml(sender)}"` : '') +
+           `>` +
+             `<mesaj>` +
+               `<metin>${escapeXml(msg)}</metin>` +
+               `<nums>${escapeXml(dest)}</nums>` +
+             `</mesaj>` +
+           `</smspack>`)
+        : (`<?xml version="1.0" encoding="UTF-8"?>` +
+           `<request>` +
+             `<authentication>` +
+               `<username>${escapeXml(MUTLUCELL_USERNAME)}</username>` +
+               `<password>${escapeXml(MUTLUCELL_PASSWORD)}</password>` +
+             `</authentication>` +
+             `<order>` +
+               (sender ? `<sender>${escapeXml(sender)}</sender>` : '') +
+               (sendAt ? `<send_date>${escapeXml(sendAt)}</send_date>` : '') +
+               (validity ? `<validity>${escapeXml(validity)}</validity>` : '') +
+               `<message>` +
+                 `<text>${escapeXml(msg)}</text>` +
+                 `<receipents>` +
+                   `<number>${escapeXml(dest)}</number>` +
+                 `</receipents>` +
+               `</message>` +
+             `</order>` +
+           `</request>`);
+
+      let urlObj;
+      try { urlObj = new URL(MUTLUCELL_API_URL); } catch (e) {
+        return resolve({ success: false, error: 'Invalid MUTLUCELL_API_URL' });
+      }
+      const isHttps = urlObj.protocol === 'https:';
+      const client = isHttps ? https : http;
+      const options = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (isHttps ? 443 : 80),
+        path: urlObj.pathname + (urlObj.search || ''),
+        method: 'POST',
+        // TLS/SNI ayarları
+        servername: urlObj.hostname,
+        rejectUnauthorized: isHttps ? !MUTLUCELL_ALLOW_INSECURE_TLS : undefined,
+        headers: {
+          'Content-Type': 'text/xml',
+          'Accept': '*/*',
+          'Content-Length': Buffer.byteLength(xml),
+        },
+      };
+      const req = client.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          const isOk = res.statusCode && res.statusCode >= 200 && res.statusCode < 300;
+          if (isOk) {
+            return resolve({ success: true, providerMessageId: String(data || '').trim() });
+          }
+          return resolve({ success: false, error: String(data || `HTTP_${res.statusCode}`) });
+        });
+      });
+      req.on('error', (e) => resolve({ success: false, error: e.message }));
+      req.write(xml);
+      req.end();
+    } catch (err) {
+      return resolve({ success: false, error: err.message });
+    }
+  });
+};
+
+// Sağlayıcı-agnostik SMS gönderim wrapper’ı
+const sendSms = (params) => {
+  return sendSmsViaMutlucell(params);
+};
