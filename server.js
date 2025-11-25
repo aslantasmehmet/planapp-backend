@@ -22,6 +22,8 @@ const OtpCode = require('./models/OtpCode');
 require('dotenv').config();
 
 const app = express();
+// Dinamik JSON yanıtlarında 304 dönen ETag davranışını kapat
+app.set('etag', false);
 const PORT = process.env.PORT || 3001;
 // Proxy arkasında doğru protokol/host bilgisi için
 app.set('trust proxy', true);
@@ -1211,6 +1213,90 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
     
     const appointment = new Appointment(appointmentData);
     await appointment.save();
+
+    // Randevu onayı alındıktan sonra SMS bildirimi gönder (public mağaza sayfası)
+    try {
+      const businessName = (storeOwner.businessId && storeOwner.businessId.name) ? storeOwner.businessId.name : (storeOwner.storeSettings?.storeName || 'Mağaza');
+      const addressText = (storeOwner.businessId && storeOwner.businessId.address) ? storeOwner.businessId.address : '';
+      const formatDateTR = (d) => {
+        try {
+          const dd = d.getDate().toString().padStart(2, '0');
+          const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+          const yyyy = d.getFullYear();
+          return `${dd}.${mm}.${yyyy}`;
+        } catch (_) { return `${d}`; }
+      };
+      const normalizeMsisdn = (phone) => {
+        const digits = String(phone || '').replace(/\D/g, '');
+        if (!digits) return null;
+        if (digits.startsWith('90') && digits.length === 12) return digits;
+        if (digits.startsWith('0') && digits.length === 11) return `90${digits.slice(1)}`;
+        if (digits.length === 10) return `90${digits}`;
+        return digits; // as is
+      };
+
+      const customerMsisdn = normalizeMsisdn(customerPhone);
+      const providerMsisdn = normalizeMsisdn(selectedStaffDoc?.phone || storeOwner.phone);
+
+      const customerMsg = `Randevunuz onaylandı: ${businessName} ${formatDateTR(startDate)} ${startTimeStr}-${endTimeStr}. ${addressText ? `Adres: ${addressText}` : ''}`.trim();
+      const providerMsg = `Yeni randevu: ${String(customerName).trim()}, ${serviceNameEffective}, ${formatDateTR(startDate)} ${startTimeStr}-${endTimeStr}. Tel: ${String(customerPhone).trim()}`;
+
+      // Müşteri SMS
+      if (customerMsisdn) {
+        try {
+          const customerLog = new SmsLog({
+            businessId: effectiveBusinessId,
+            userId: providerUserId,
+            appointmentId: appointment._id,
+            msisdn: customerMsisdn,
+            message: customerMsg,
+            status: 'queued'
+          });
+          await customerLog.save();
+          const sendRes = await sendSms({ dest: customerMsisdn, msg: customerMsg, originator: MUTLUCELL_ORIGINATOR, validFor: MUTLUCELL_VALIDITY, customId: String(appointment._id) });
+          if (sendRes && !sendRes.error && sendRes.success !== false) {
+            customerLog.status = 'sent';
+            customerLog.providerMessageId = sendRes.providerMessageId || undefined;
+            customerLog.sentAt = new Date();
+          } else {
+            customerLog.status = 'failed';
+            customerLog.error = (sendRes && sendRes.error) ? sendRes.error : 'SMS gönderimi başarısız';
+          }
+          await customerLog.save();
+        } catch (smsErr) {
+          console.warn('Public müşteri SMS gönderim hatası:', smsErr?.message || smsErr);
+        }
+      }
+
+      // Sağlayıcı SMS
+      if (providerMsisdn) {
+        try {
+          const providerLog = new SmsLog({
+            businessId: effectiveBusinessId,
+            userId: providerUserId,
+            appointmentId: appointment._id,
+            msisdn: providerMsisdn,
+            message: providerMsg,
+            status: 'queued'
+          });
+          await providerLog.save();
+          const sendRes2 = await sendSms({ dest: providerMsisdn, msg: providerMsg, originator: MUTLUCELL_ORIGINATOR, validFor: MUTLUCELL_VALIDITY, customId: String(appointment._id) });
+          if (sendRes2 && !sendRes2.error && sendRes2.success !== false) {
+            providerLog.status = 'sent';
+            providerLog.providerMessageId = sendRes2.providerMessageId || undefined;
+            providerLog.sentAt = new Date();
+          } else {
+            providerLog.status = 'failed';
+            providerLog.error = (sendRes2 && sendRes2.error) ? sendRes2.error : 'SMS gönderimi başarısız';
+          }
+          await providerLog.save();
+        } catch (smsErr2) {
+          console.warn('Public sağlayıcı SMS gönderim hatası:', smsErr2?.message || smsErr2);
+        }
+      }
+    } catch (smsWrapErr) {
+      console.warn('Public randevu sonrası SMS akışında hata:', smsWrapErr?.message || smsWrapErr);
+    }
     // Başarılı oluşturma sonrası: premium pakette aylık kullanım sayacını artır
     try {
       const planQuotaMap = { plus: 200, pro: 400, premium: null };
@@ -1248,7 +1334,104 @@ app.post('/api/appointments', authenticateToken, async (req, res) => {
       createdAt: appointment.createdAt
     });
     
-    res.status(201).json({
+    // Randevu onayı alındıktan sonra SMS bildirimi gönder (panelde oluşturulan)
+    try {
+      if (!appointment.isBlocked) {
+        const businessDoc = await Business.findById(appointment.businessId);
+        const businessName = businessDoc?.name || 'Mağaza';
+        const addressText = businessDoc?.address || '';
+        const formatDateTR = (d) => {
+          try {
+            const dd = d.getDate().toString().padStart(2, '0');
+            const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+            const yyyy = d.getFullYear();
+            return `${dd}.${mm}.${yyyy}`;
+          } catch (_) { return `${d}`; }
+        };
+        const normalizeMsisdn = (phone) => {
+          const digits = String(phone || '').replace(/\D/g, '');
+          if (!digits) return null;
+          if (digits.startsWith('90') && digits.length === 12) return digits;
+          if (digits.startsWith('0') && digits.length === 11) return `90${digits.slice(1)}`;
+          if (digits.length === 10) return `90${digits}`;
+          return digits; // as is
+        };
+
+        const startDate = new Date(appointment.date);
+        const startTimeStr = String(appointment.startTime || '').trim();
+        const endTimeStr = String(appointment.endTime || '').trim();
+
+        const customerName = String(appointment.clientName || '').trim();
+        const customerPhone = String(appointment.clientPhone || '').trim();
+        const serviceNameEffective = String(appointment.title || appointment.type || 'Hizmet').trim();
+
+        const providerUserId = appointment.createdBy || appointment.userId;
+        const providerUser = providerUserId ? await User.findById(providerUserId) : null;
+        const providerMsisdn = normalizeMsisdn(providerUser?.phone || user.phone);
+        const customerMsisdn = normalizeMsisdn(customerPhone);
+
+        const customerMsg = `Randevunuz onaylandı: ${businessName} ${formatDateTR(startDate)} ${startTimeStr}-${endTimeStr}. ${addressText ? `Adres: ${addressText}` : ''}`.trim();
+        const providerMsg = `Yeni randevu: ${customerName}, ${serviceNameEffective}, ${formatDateTR(startDate)} ${startTimeStr}-${endTimeStr}. Tel: ${customerPhone}`;
+
+        // Müşteriye SMS
+        if (customerMsisdn) {
+          try {
+            const customerLog = new SmsLog({
+              businessId: appointment.businessId,
+              userId: providerUserId,
+              appointmentId: appointment._id,
+              msisdn: customerMsisdn,
+              message: customerMsg,
+              status: 'queued'
+            });
+            await customerLog.save();
+            const sendRes = await sendSms({ dest: customerMsisdn, msg: customerMsg, originator: MUTLUCELL_ORIGINATOR, validFor: MUTLUCELL_VALIDITY, customId: String(appointment._id) });
+            if (sendRes && !sendRes.error && sendRes.success !== false) {
+              customerLog.status = 'sent';
+              customerLog.providerMessageId = sendRes.providerMessageId || undefined;
+              customerLog.sentAt = new Date();
+            } else {
+              customerLog.status = 'failed';
+              customerLog.error = (sendRes && sendRes.error) ? sendRes.error : 'SMS gönderimi başarısız';
+            }
+            await customerLog.save();
+          } catch (smsErr) {
+            console.warn('Müşteri SMS gönderim hatası:', smsErr?.message || smsErr);
+          }
+        }
+
+        // Sağlayıcıya SMS
+        if (providerMsisdn) {
+          try {
+            const providerLog = new SmsLog({
+              businessId: appointment.businessId,
+              userId: providerUserId,
+              appointmentId: appointment._id,
+              msisdn: providerMsisdn,
+              message: providerMsg,
+              status: 'queued'
+            });
+            await providerLog.save();
+            const sendRes2 = await sendSms({ dest: providerMsisdn, msg: providerMsg, originator: MUTLUCELL_ORIGINATOR, validFor: MUTLUCELL_VALIDITY, customId: String(appointment._id) });
+            if (sendRes2 && !sendRes2.error && sendRes2.success !== false) {
+              providerLog.status = 'sent';
+              providerLog.providerMessageId = sendRes2.providerMessageId || undefined;
+              providerLog.sentAt = new Date();
+            } else {
+              providerLog.status = 'failed';
+              providerLog.error = (sendRes2 && sendRes2.error) ? sendRes2.error : 'SMS gönderimi başarısız';
+            }
+            await providerLog.save();
+          } catch (smsErr2) {
+            console.warn('Sağlayıcı SMS gönderim hatası:', smsErr2?.message || smsErr2);
+          }
+        }
+      }
+    } catch (smsWrapErr) {
+      console.warn('Randevu sonrası SMS akışında hata:', smsWrapErr?.message || smsWrapErr);
+    }
+
+  res.status(201).json({
       message: 'Randevu başarıyla oluşturuldu',
       appointment
     });
@@ -1389,13 +1572,107 @@ app.put('/api/appointments/:id', authenticateToken, async (req, res) => {
     }
 
     // Randevuyu güncelle
-    const appointment = await Appointment.findOneAndUpdate(query, req.body, { new: true });
-    
-    if (!appointment) {
-      return res.status(404).json({ error: 'Randevu bulunamadı veya yetkiniz yok' });
+  const appointment = await Appointment.findOneAndUpdate(query, req.body, { new: true });
+  
+  if (!appointment) {
+    return res.status(404).json({ error: 'Randevu bulunamadı veya yetkiniz yok' });
+  }
+  // Onaylandıktan sonra SMS gönder (status 'scheduled' durumuna geçiş)
+  try {
+    const becameScheduled = typeof req.body.status !== 'undefined' && String(req.body.status) === 'scheduled' && String(existing.status) !== 'scheduled';
+    if (becameScheduled && !appointment.isBlocked) {
+      const businessDoc = await Business.findById(appointment.businessId);
+      const businessName = businessDoc?.name || 'Mağaza';
+      const addressText = businessDoc?.address || '';
+      const formatDateTR = (d) => {
+        try {
+          const dd = d.getDate().toString().padStart(2, '0');
+          const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+          const yyyy = d.getFullYear();
+          return `${dd}.${mm}.${yyyy}`;
+        } catch (_) { return `${d}`; }
+      };
+      const normalizeMsisdn = (phone) => {
+        const digits = String(phone || '').replace(/\D/g, '');
+        if (!digits) return null;
+        if (digits.startsWith('90') && digits.length === 12) return digits;
+        if (digits.startsWith('0') && digits.length === 11) return `90${digits.slice(1)}`;
+        if (digits.length === 10) return `90${digits}`;
+        return digits; // as is
+      };
+
+      const startDate = new Date(appointment.date);
+      const startTimeStr = String(appointment.startTime || '').trim();
+      const endTimeStr = String(appointment.endTime || '').trim();
+      const customerName = String(appointment.clientName || '').trim();
+      const customerPhone = String(appointment.clientPhone || '').trim();
+      const serviceNameEffective = String(appointment.title || appointment.type || 'Hizmet').trim();
+
+      const providerUserId = appointment.createdBy || appointment.userId;
+      const providerUser = providerUserId ? await User.findById(providerUserId) : null;
+      const providerMsisdn = normalizeMsisdn(providerUser?.phone || user.phone);
+      const customerMsisdn = normalizeMsisdn(customerPhone);
+
+      const customerMsg = `Randevunuz onaylandı: ${businessName} ${formatDateTR(startDate)} ${startTimeStr}-${endTimeStr}. ${addressText ? `Adres: ${addressText}` : ''}`.trim();
+      const providerMsg = `Yeni randevu: ${customerName}, ${serviceNameEffective}, ${formatDateTR(startDate)} ${startTimeStr}-${endTimeStr}. Tel: ${customerPhone}`;
+
+      if (customerMsisdn) {
+        try {
+          const customerLog = new SmsLog({
+            businessId: appointment.businessId,
+            userId: providerUserId,
+            appointmentId: appointment._id,
+            msisdn: customerMsisdn,
+            message: customerMsg,
+            status: 'queued'
+          });
+          await customerLog.save();
+          const sendRes = await sendSms({ dest: customerMsisdn, msg: customerMsg, originator: MUTLUCELL_ORIGINATOR, validFor: MUTLUCELL_VALIDITY, customId: String(appointment._id) });
+          if (sendRes && !sendRes.error && sendRes.success !== false) {
+            customerLog.status = 'sent';
+            customerLog.providerMessageId = sendRes.providerMessageId || undefined;
+            customerLog.sentAt = new Date();
+          } else {
+            customerLog.status = 'failed';
+            customerLog.error = (sendRes && sendRes.error) ? sendRes.error : 'SMS gönderimi başarısız';
+          }
+          await customerLog.save();
+        } catch (smsErr) {
+          console.warn('Güncelleme sonrası müşteri SMS hatası:', smsErr?.message || smsErr);
+        }
+      }
+
+      if (providerMsisdn) {
+        try {
+          const providerLog = new SmsLog({
+            businessId: appointment.businessId,
+            userId: providerUserId,
+            appointmentId: appointment._id,
+            msisdn: providerMsisdn,
+            message: providerMsg,
+            status: 'queued'
+          });
+          await providerLog.save();
+          const sendRes2 = await sendSms({ dest: providerMsisdn, msg: providerMsg, originator: MUTLUCELL_ORIGINATOR, validFor: MUTLUCELL_VALIDITY, customId: String(appointment._id) });
+          if (sendRes2 && !sendRes2.error && sendRes2.success !== false) {
+            providerLog.status = 'sent';
+            providerLog.providerMessageId = sendRes2.providerMessageId || undefined;
+            providerLog.sentAt = new Date();
+          } else {
+            providerLog.status = 'failed';
+            providerLog.error = (sendRes2 && sendRes2.error) ? sendRes2.error : 'SMS gönderimi başarısız';
+          }
+          await providerLog.save();
+        } catch (smsErr2) {
+          console.warn('Güncelleme sonrası sağlayıcı SMS hatası:', smsErr2?.message || smsErr2);
+        }
+      }
     }
+  } catch (smsWrapErr) {
+    console.warn('Randevu güncelleme SMS akışında hata:', smsWrapErr?.message || smsWrapErr);
+  }
     
-    res.json({
+  res.json({
       message: 'Randevu başarıyla güncellendi',
       appointment
     });
@@ -3155,7 +3432,7 @@ app.get('/api/customers', authenticateToken, async (req, res) => {
         // Müşterileri birleştir ve duplikatları kaldır
         const allCustomers = [...ownerCustomers, ...allStaffCustomers];
         const uniqueCustomers = allCustomers.filter((customer, index, self) => 
-          index === self.findIndex(c => c.phone === customer.phone || c.name === customer.name)
+          index === self.findIndex(c => c.phone && customer.phone && c.phone === customer.phone)
         );
         
         customers = uniqueCustomers;
@@ -3327,49 +3604,106 @@ app.put('/api/customers/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Müşteri adı ve telefonu gereklidir' });
     }
 
-    const user = await User.findById(req.user.userId).select('customers');
-    const customers = user?.customers || [];
-    
-    // Müşteriyi bul (id veya _id ile)
-    const customerIndex = customers.findIndex(c => 
-      c.id === id || c._id === id || (c._id?.toString && c._id?.toString() === id)
-    );
-    if (customerIndex === -1) {
-      return res.status(404).json({ error: 'Müşteri bulunamadı' });
+    // Güncelleme yapılacak kullanıcıyı ve tipini al
+    const actor = await User.findById(req.user.userId).select('customers userType businessId');
+    if (!actor) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
     }
-    
-    // Aynı isim/telefon ile başka müşteri var mı kontrol et
-    const existingCustomer = customers.find((c, index) => 
-      index !== customerIndex && (
-        c.name.toLowerCase() === name.toLowerCase() ||
-        (phone && c.phone === phone)
-      )
-    );
-    
-    if (existingCustomer) {
-      return res.status(400).json({ error: 'Bu isim veya telefon numarası başka bir müşteri tarafından kullanılıyor' });
-    }
-    
-    // Müşteriyi güncelle
-    customers[customerIndex] = {
-      ...customers[customerIndex],
+
+    // Yardımcı: listede müşteri indeksini bul
+    const findIndexInList = (list, targetId) => {
+      return (list || []).findIndex(c => c.id === targetId || (c._id && c._id.toString() === targetId));
+    };
+
+    const buildUpdatedCustomer = (prev) => ({
+      ...prev,
       name: name.trim(),
       phone: phone.trim(),
       email: email ? email.trim() : '',
       updatedAt: new Date().toISOString()
-    };
-    
-    await User.findByIdAndUpdate(
-      req.user.userId,
-      { customers: customers },
-      { new: true }
-    );
-    
-    res.json({
-      message: 'Müşteri başarıyla güncellendi',
-      customer: customers[customerIndex],
-      customers: customers
     });
+
+    // Staff ise sadece kendi müşteri listesinde güncelle
+    if (actor.userType === 'staff') {
+      const customers = actor.customers || [];
+      const customerIndex = findIndexInList(customers, id);
+      if (customerIndex === -1) {
+        return res.status(404).json({ error: 'Müşteri bulunamadı' });
+      }
+      // Duplikasyon kontrolü (aynı listede başka kayıtla çakışma)
+      const duplicate = customers.find((c, idx) => idx !== customerIndex && (
+        (c.phone && c.phone === phone)
+      ));
+      if (duplicate) {
+        return res.status(400).json({ error: 'Bu isim veya telefon numarası başka bir müşteri tarafından kullanılıyor' });
+      }
+
+      customers[customerIndex] = buildUpdatedCustomer(customers[customerIndex]);
+      await User.findByIdAndUpdate(actor._id, { customers }, { new: true });
+      return res.json({
+        message: 'Müşteri başarıyla güncellendi',
+        customer: customers[customerIndex],
+        customers
+      });
+    }
+
+    // Owner ise: önce kendi listesinde dene, değilse işletmedeki staff listelerinde bul ve güncelle
+    let ownerCustomers = actor.customers || [];
+    let customerIndex = findIndexInList(ownerCustomers, id);
+    if (customerIndex !== -1) {
+      const duplicate = ownerCustomers.find((c, idx) => idx !== customerIndex && (
+        (c.phone && c.phone === phone)
+      ));
+      if (duplicate) {
+        return res.status(400).json({ error: 'Bu isim veya telefon numarası başka bir müşteri tarafından kullanılıyor' });
+      }
+      ownerCustomers[customerIndex] = buildUpdatedCustomer(ownerCustomers[customerIndex]);
+      await User.findByIdAndUpdate(actor._id, { customers: ownerCustomers }, { new: true });
+      return res.json({
+        message: 'Müşteri başarıyla güncellendi',
+        customer: ownerCustomers[customerIndex],
+        customers: ownerCustomers
+      });
+    }
+
+    // Owner'ın businessId'sini doğrula/oluştur
+    let ownerBusinessId = actor.businessId;
+    if (!ownerBusinessId) {
+      const biz = await Business.findOne({ ownerId: actor._id }).select('_id');
+      if (biz) {
+        ownerBusinessId = biz._id;
+        try { await User.findByIdAndUpdate(actor._id, { businessId: biz._id }); } catch (e) { /* sessiz */ }
+      }
+    }
+
+    if (!ownerBusinessId) {
+      return res.status(404).json({ error: 'İşletme bilgileri bulunamadı' });
+    }
+
+    // Aynı işletmedeki personelleri getir ve müşteriyi personel listesinde bul
+    const staffMembers = await User.find({ userType: 'staff', businessId: ownerBusinessId }).select('customers');
+    for (const staff of staffMembers) {
+      const list = staff.customers || [];
+      const idx = findIndexInList(list, id);
+      if (idx !== -1) {
+        const duplicate = list.find((c, j) => j !== idx && (
+          (c.phone && c.phone === phone)
+        ));
+        if (duplicate) {
+          return res.status(400).json({ error: 'Bu isim veya telefon numarası başka bir müşteri tarafından kullanılıyor' });
+        }
+        list[idx] = buildUpdatedCustomer(list[idx]);
+        await User.findByIdAndUpdate(staff._id, { customers: list }, { new: true });
+        return res.json({
+          message: 'Müşteri başarıyla güncellendi',
+          customer: list[idx],
+          customers: list
+        });
+      }
+    }
+
+    // Hiçbir listede bulunamazsa 404
+    return res.status(404).json({ error: 'Müşteri bulunamadı' });
   } catch (error) {
     console.error('Müşteri güncelleme hatası:', error);
     res.status(500).json({ error: 'Sunucu hatası' });
@@ -3530,6 +3864,62 @@ app.get('/api/public/store/:storeName', async (req, res) => {
     // İşletme bilgilerini ayrıca getir
     const business = await Business.findOne({ ownerId: user._id });
 
+    // Sahip ve personele ait hizmetleri birleştir (mağazada gösterilecekler)
+    const ownerServices = Array.isArray(user.services) ? user.services : [];
+    const staffUsers = user.businessId 
+      ? await User.find({ userType: 'staff', businessId: user.businessId }).select('services name')
+      : [];
+    const staffServices = Array.isArray(staffUsers)
+      ? staffUsers.flatMap(u => Array.isArray(u.services) ? u.services : [])
+      : [];
+    const combinedServicesRaw = [...ownerServices, ...staffServices];
+    
+    // Standart formata dönüştür + mağazada gösterilmeyenleri filtrele
+    const combinedFormatted = combinedServicesRaw
+      .filter(service => {
+        if (typeof service === 'string') return true; // Eski format
+        return service?.showInStore !== false; // showInStore false değilse göster
+      })
+      .map(service => {
+        if (typeof service === 'object' && service !== null) {
+          return {
+            id: service.id || service._id,
+            name: service.name || String(service),
+            description: service.description || '',
+            duration: service.duration !== undefined ? Number(service.duration) : 0,
+            price: service.price !== undefined ? Number(service.price) : 0,
+            images: service.images || [],
+            storeImages: service.storeImages || [],
+            storeDescription: service.storeDescription || '',
+            showInStore: service.showInStore !== undefined ? service.showInStore : true,
+            createdAt: service.createdAt || new Date()
+          };
+        }
+        // String formatı
+        return {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+          name: String(service),
+          description: '',
+          duration: 0,
+          price: 0,
+          images: [],
+          storeImages: [],
+          storeDescription: '',
+          showInStore: true,
+          createdAt: new Date()
+        };
+      });
+
+    // Aynı isimdeki hizmetleri tekilleştir (isim öncelikli)
+    const serviceMap = new Map();
+    for (const s of combinedFormatted) {
+      const key = (s.name || '').trim().toLowerCase();
+      if (!serviceMap.has(key)) {
+        serviceMap.set(key, s);
+      }
+    }
+    const combinedServices = Array.from(serviceMap.values());
+
     // Public store bilgilerini döndür
     const storeData = {
       storeName: user.storeSettings.storeName,
@@ -3540,28 +3930,8 @@ app.get('/api/public/store/:storeName', async (req, res) => {
       allowAppointmentCancellation: user.storeSettings.allowAppointmentCancellation,
       showPlanlyoLogo: user.storeSettings.showPlanlyoLogo,
       enableChatAssistant: user.storeSettings.enableChatAssistant,
-      // Sadece mağazada gösterilecek hizmetleri filtrele ve tüm alanları dahil et
-      services: (user.services || []).filter(service => {
-        if (typeof service === 'string') return true; // Eski format için
-        return service.showInStore !== false; // showInStore false değilse göster
-      }).map(service => {
-        // Hizmet objesi ise tüm alanları dahil et, string ise olduğu gibi bırak
-        if (typeof service === 'object' && service !== null) {
-          return {
-            id: service.id || service._id,
-            name: service.name,
-            description: service.description,
-            duration: service.duration,
-            price: service.price,
-            images: service.images || [], // Resimleri dahil et
-            storeImages: service.storeImages || [], // Store özel resimler varsa onları da dahil et
-            storeDescription: service.storeDescription,
-            showInStore: service.showInStore,
-            createdAt: service.createdAt
-          };
-        }
-        return service;
-      }),
+      // Mağazada gösterilecek hizmetler (sahip + personel birleşik)
+      services: combinedServices,
       business: business ? {
         name: business.name,
         description: business.description,
@@ -3570,9 +3940,15 @@ app.get('/api/public/store/:storeName', async (req, res) => {
         email: business.email,
         website: business.website,
         logo: business.logo,
+        images: Array.isArray(business.images) ? business.images : [],
         services: business.services,
         staff: business.staff,
-        workingHours: business.workingHours
+        workingHours: business.workingHours,
+        // Lokasyon bilgileri (SMS’teki konumla aynı kaynaktan)
+        locationLat: business.locationLat,
+        locationLon: business.locationLon,
+        locationVerified: business.locationVerified,
+        locationMethod: business.locationMethod
       } : null
     };
 
@@ -3587,20 +3963,21 @@ app.get('/api/public/store/:storeName', async (req, res) => {
 app.post('/api/public/store/:storeName/appointments', async (req, res) => {
   try {
     const { storeName } = req.params;
-    const { 
-      customerName, 
-      customerPhone, 
-      customerEmail, 
-      serviceId, 
-      staffId, 
-      date, 
-      time 
+    const {
+      customerName,
+      customerPhone,
+      customerEmail,
+      serviceId,
+      serviceName,
+      staffId,
+      date,
+      time
     } = req.body;
 
     // Gerekli alanları kontrol et
-    if (!storeName || !customerName || !customerPhone || !serviceId || !date || !time) {
-      return res.status(400).json({ 
-        error: 'Mağaza adı, müşteri adı, telefon, hizmet, tarih ve saat gerekli' 
+    if (!storeName || !customerName || !customerPhone || (!serviceId && !serviceName) || !date || !time) {
+      return res.status(400).json({
+        error: 'Mağaza adı, müşteri adı, telefon, hizmet (ID veya isim), tarih ve saat gerekli'
       });
     }
 
@@ -3661,61 +4038,180 @@ app.post('/api/public/store/:storeName/appointments', async (req, res) => {
       console.warn('Public kota kontrol hatası:', quotaErr);
     }
 
-    // Hizmeti kontrol et
-    const service = storeOwner.services.find(s => 
-      (s.id || s._id).toString() === serviceId
-    );
-    
+    // Hizmeti kontrol et: önce owner, sonra personeller
+    let service = null;
+    let serviceCreatorId = null;
+
+    if (storeOwner.services && Array.isArray(storeOwner.services)) {
+      const ownerService = storeOwner.services.find(s => {
+        const sid = (typeof s === 'object' && s !== null) ? (s.id || s._id) : s;
+        return serviceId && sid && sid.toString() === serviceId;
+      });
+      if (ownerService) {
+        service = ownerService;
+        serviceCreatorId = storeOwner._id;
+      }
+    }
+
+    const business = storeOwner.businessId;
+    const businessIdVal = business && business._id ? business._id : business;
+    let staffUsers = [];
+    try {
+      staffUsers = await User.find({ userType: 'staff', businessId: businessIdVal }).select('_id name email phone services workingHours customers');
+    } catch (e) {
+      staffUsers = [];
+    }
+
+    if (!service && Array.isArray(staffUsers) && staffUsers.length > 0) {
+      for (const staff of staffUsers) {
+        if (staff.services && Array.isArray(staff.services)) {
+          const staffService = staff.services.find(s => {
+            const sid = (typeof s === 'object' && s !== null) ? (s.id || s._id) : s;
+            return serviceId && sid && sid.toString() === serviceId;
+          });
+          if (staffService) {
+            service = staffService;
+            serviceCreatorId = staff._id;
+            break;
+          }
+        }
+      }
+    }
+
+    // ID ile bulunamadıysa isimle dene (case-insensitive)
+    if (!service && serviceName) {
+      const normName = String(serviceName).trim().toLowerCase();
+      if (storeOwner.services && Array.isArray(storeOwner.services)) {
+        const ownerServiceByName = storeOwner.services.find(s => {
+          const sname = (typeof s === 'object' && s !== null) ? (s.name || '') : String(s || '');
+          return sname.trim().toLowerCase() === normName;
+        });
+        if (ownerServiceByName) {
+          service = ownerServiceByName;
+          serviceCreatorId = storeOwner._id;
+        }
+      }
+      if (!service && Array.isArray(staffUsers) && staffUsers.length > 0) {
+        for (const staff of staffUsers) {
+          if (staff.services && Array.isArray(staff.services)) {
+            const staffServiceByName = staff.services.find(s => {
+              const sname = (typeof s === 'object' && s !== null) ? (s.name || '') : String(s || '');
+              return sname.trim().toLowerCase() === normName;
+            });
+            if (staffServiceByName) {
+              service = staffServiceByName;
+              serviceCreatorId = staff._id;
+              break;
+            }
+          }
+        }
+      }
+    }
+
     if (!service) {
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
     }
 
-    // Personeli kontrol et (eğer belirtilmişse)
-    let selectedStaff = null;
-    if (staffId && storeOwner.businessId && storeOwner.businessId.staff) {
-      selectedStaff = storeOwner.businessId.staff.find(s => 
-        s._id.toString() === staffId
-      );
-      if (!selectedStaff) {
+    // Personeli kontrol et (eğer belirtilmişse) - staff listesinde ara
+    let selectedStaffDoc = null;
+    if (staffId && staffId !== 'all') {
+      selectedStaffDoc = staffUsers.find(s => s._id.toString() === staffId);
+      if (!selectedStaffDoc) {
         return res.status(404).json({ error: 'Personel bulunamadı' });
+      }
+    } else if (!staffId && serviceCreatorId) {
+      // Personel belirtilmemiş ama hizmet bir personele aitse otomatik ata
+      selectedStaffDoc = staffUsers.find(s => s._id.toString() === serviceCreatorId.toString()) || null;
+    }
+
+    // Müşteriyi kontrol et ve sağlayıcı müşterilerine ekle
+    const providerUserId = selectedStaffDoc ? selectedStaffDoc._id : storeOwner._id;
+    const providerIsStaff = !!selectedStaffDoc;
+
+    // Owner ve staff müşterilerinde telefon eşleşmesi ara
+    const ownerCustomers = Array.isArray(storeOwner.customers) ? storeOwner.customers : [];
+    const staffCustomers = selectedStaffDoc && Array.isArray(selectedStaffDoc.customers) ? selectedStaffDoc.customers : [];
+    const existingCustomerInOwner = ownerCustomers.find(c => c.phone === String(customerPhone).trim());
+    const existingCustomerInStaff = staffCustomers.find(c => c.phone === String(customerPhone).trim());
+
+    // Etkili businessId belirle
+    let effectiveBusinessId = storeOwner.businessId && storeOwner.businessId._id ? storeOwner.businessId._id : storeOwner.businessId;
+
+    // Eğer mevcut müşteri varsa ve sağlayıcı listesinde yoksa ekle
+    let customerObj = existingCustomerInStaff || existingCustomerInOwner || null;
+    if (customerObj && !existingCustomerInStaff && providerIsStaff) {
+      const newCustomerForStaff = {
+        id: customerObj.id || Date.now().toString(),
+        name: customerObj.name || customerName,
+        phone: customerObj.phone,
+        email: customerObj.email || (customerEmail ? String(customerEmail).trim() : ''),
+        addedBy: providerUserId,
+        businessId: effectiveBusinessId,
+        createdAt: customerObj.createdAt || new Date().toISOString()
+      };
+      const updatedStaffCustomers = [...staffCustomers, newCustomerForStaff];
+      await User.findByIdAndUpdate(providerUserId, { customers: updatedStaffCustomers }, { new: true });
+    }
+
+    // Hiç müşteri bulunamadıysa yeni müşteri nesnesi oluştur ve ekle
+    if (!customerObj) {
+      const newCustomer = {
+        id: Date.now().toString(),
+        name: String(customerName).trim(),
+        phone: String(customerPhone).trim(),
+        email: customerEmail ? String(customerEmail).trim() : '',
+        addedBy: providerUserId,
+        businessId: effectiveBusinessId,
+        createdAt: new Date().toISOString()
+      };
+
+      if (providerIsStaff) {
+        const updatedStaffCustomers = [...staffCustomers, newCustomer];
+        await User.findByIdAndUpdate(providerUserId, { customers: updatedStaffCustomers }, { new: true });
+        // Owner listesine de ekle (duplikasyon kontrolü)
+        const ownerHasSame = ownerCustomers.find(c => c.phone === newCustomer.phone);
+        if (!ownerHasSame) {
+          const updatedOwnerCustomers = [...ownerCustomers, newCustomer];
+          await User.findByIdAndUpdate(storeOwner._id, { customers: updatedOwnerCustomers }, { new: true });
+        }
+      } else {
+        const updatedOwnerCustomers = [...ownerCustomers, newCustomer];
+        await User.findByIdAndUpdate(storeOwner._id, { customers: updatedOwnerCustomers }, { new: true });
       }
     }
 
-    // Müşteriyi bul veya oluştur
-    let customer = await User.findOne({ 
-      phone: customerPhone,
-      businessId: storeOwner.businessId._id 
-    });
+    // Randevu alanlarını oluştur (Appointment şemasına uygun)
+    const serviceNameEffective = (typeof service === 'object' && service !== null) ? (service.name || String(service)) : String(service);
+    const serviceDurationMin = (typeof service === 'object' && service !== null) ? (Number(service.duration) || 60) : 60;
+    const startTimeStr = String(time).trim();
+    const [sh, sm] = startTimeStr.split(':').map(n => parseInt(n, 10));
+    const startDate = new Date(date);
+    const endDate = new Date(startDate.getTime());
+    endDate.setHours(sh || 0, (sm || 0) + serviceDurationMin, 0, 0);
+    const endHours = endDate.getHours().toString().padStart(2, '0');
+    const endMinutes = endDate.getMinutes().toString().padStart(2, '0');
+    const endTimeStr = `${endHours}:${endMinutes}`;
 
-    if (!customer) {
-      // Yeni müşteri oluştur
-      customer = new User({
-        name: customerName,
-        phone: customerPhone,
-        email: customerEmail || '',
-        role: 'customer',
-        businessId: storeOwner.businessId._id,
-        password: 'default-password'
-      });
-      await customer.save();
-    }
-
-    // Randevu oluştur
-    const appointment = new Appointment({
-      customerId: customer._id,
-      businessId: storeOwner.businessId._id,
-      service: service.name,
-      serviceId: serviceId,
-      staffId: selectedStaff ? selectedStaff._id : null,
-      staffName: selectedStaff ? selectedStaff.name : 'Belirtilmedi',
-      date: new Date(date),
-      time: time,
+    const appointmentData = {
+      title: serviceNameEffective,
+      description: '',
+      clientName: String(customerName).trim(),
+      clientEmail: customerEmail ? String(customerEmail).trim() : '',
+      clientPhone: String(customerPhone).trim(),
+      date: startDate,
+      startTime: startTimeStr,
+      endTime: endTimeStr,
       status: 'scheduled',
+      isBlocked: false,
+      type: serviceNameEffective,
+      serviceId: (typeof service === 'object' && service !== null) ? (service.id || service._id || serviceId || '') : (serviceId || ''),
       notes: `Mağaza sayfasından oluşturulan randevu - ${storeName}`,
-      createdBy: storeOwner._id,
-      duration: service.duration || 60
-    });
+      userId: providerUserId, // Hizmeti verenin takvimine ekle (owner veya staff)
+      businessId: effectiveBusinessId,
+      createdBy: providerUserId // Randevuyu oluşturan/atanan sağlayıcı
+    };
 
+    const appointment = new Appointment(appointmentData);
     await appointment.save();
 
     // Sayaç artırma: premium ve kota sınırlı ise basit sayaç artışı
@@ -3732,14 +4228,7 @@ app.post('/api/public/store/:storeName/appointments', async (req, res) => {
 
     res.status(201).json({
       message: 'Randevu başarıyla oluşturuldu',
-      appointment: {
-        id: appointment._id,
-        service: appointment.service,
-        staffName: appointment.staffName,
-        date: appointment.date,
-        time: appointment.time,
-        status: appointment.status
-      }
+      appointment
     });
 
   } catch (error) {
@@ -3752,11 +4241,11 @@ app.post('/api/public/store/:storeName/appointments', async (req, res) => {
 app.get('/api/public/store/:storeName/available-slots', async (req, res) => {
   try {
     const { storeName } = req.params;
-    const { date, serviceId, staffId } = req.query;
+    const { date, serviceId, serviceName, staffId } = req.query;
 
-    if (!storeName || !date || !serviceId) {
+    if (!storeName || !date || (!serviceId && !serviceName)) {
       return res.status(400).json({ 
-        error: 'Mağaza adı, tarih ve hizmet ID gerekli' 
+        error: 'Mağaza adı, tarih ve hizmet (ID veya isim) gerekli' 
       });
     }
 
@@ -3775,11 +4264,73 @@ app.get('/api/public/store/:storeName/available-slots', async (req, res) => {
       return res.status(400).json({ error: 'İşletme bilgisi bulunamadı' });
     }
 
-    // Hizmeti bul (string veya object olabilir)
-    const service = storeOwner.services.find(s => {
-      const sid = (typeof s === 'object' && s !== null) ? (s.id || s._id) : s;
-      return sid && sid.toString() === serviceId;
-    });
+    // Hizmeti bul: önce mağaza sahibinin hizmetleri, sonra User koleksiyonundaki personel hizmetleri
+    let service = null;
+    let serviceCreatorId = null;
+
+    if (storeOwner.services && Array.isArray(storeOwner.services)) {
+      const ownerService = storeOwner.services.find(s => {
+        const sid = (typeof s === 'object' && s !== null) ? (s.id || s._id) : s;
+        return serviceId && sid && sid.toString() === serviceId;
+      });
+      if (ownerService) {
+        service = ownerService;
+        serviceCreatorId = storeOwner._id;
+      }
+    }
+
+    const business = storeOwner.businessId;
+    // Personelleri User koleksiyonundan çek
+    const staffUsers = await User.find({
+      userType: 'staff',
+      businessId: business._id
+    }).select('name services workingHours');
+
+    if (!service && Array.isArray(staffUsers) && staffUsers.length > 0) {
+      for (const su of staffUsers) {
+        if (su.services && Array.isArray(su.services)) {
+          const staffService = su.services.find(s => {
+            const sid = (typeof s === 'object' && s !== null) ? (s.id || s._id) : s;
+            return serviceId && sid && sid.toString() === serviceId;
+          });
+          if (staffService) {
+            service = staffService;
+            serviceCreatorId = su._id;
+            break;
+          }
+        }
+      }
+    }
+
+    // ID ile bulunamadıysa isimle dene (case-insensitive)
+    if (!service && serviceName) {
+      const normName = String(serviceName).trim().toLowerCase();
+      if (storeOwner.services && Array.isArray(storeOwner.services)) {
+        const ownerServiceByName = storeOwner.services.find(s => {
+          const sname = (typeof s === 'object' && s !== null) ? (s.name || '') : String(s || '');
+          return sname.trim().toLowerCase() === normName;
+        });
+        if (ownerServiceByName) {
+          service = ownerServiceByName;
+          serviceCreatorId = storeOwner._id;
+        }
+      }
+      if (!service && Array.isArray(staffUsers) && staffUsers.length > 0) {
+        for (const su of staffUsers) {
+          if (su.services && Array.isArray(su.services)) {
+            const staffServiceByName = su.services.find(s => {
+              const sname = (typeof s === 'object' && s !== null) ? (s.name || '') : String(s || '');
+              return sname.trim().toLowerCase() === normName;
+            });
+            if (staffServiceByName) {
+              service = staffServiceByName;
+              serviceCreatorId = su._id;
+              break;
+            }
+          }
+        }
+      }
+    }
     
     if (!service) {
       return res.status(404).json({ error: 'Hizmet bulunamadı' });
@@ -3791,49 +4342,102 @@ app.get('/api/public/store/:storeName/available-slots', async (req, res) => {
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
 
+    // Uygulanacak sağlayıcıyı belirle (personel veya mağaza sahibi)
+    const providerUserId = (staffId && staffId !== 'all')
+      ? staffId
+      : (serviceCreatorId ? serviceCreatorId : storeOwner._id);
+
     const existingAppointments = await Appointment.find({
       businessId: storeOwner.businessId._id,
       date: { $gte: startOfDay, $lte: endOfDay },
       status: { $ne: 'cancelled' },
-      ...(staffId && { staffId: staffId })
+      userId: providerUserId
     });
 
-    // Çalışma saatlerini al - sadece kullanıcının tanımladığı saatler
-    const workingHours = storeOwner.businessId.workingHours;
-
-    // Çalışma saatleri tanımlanmamışsa boş slot döndür
-    if (!workingHours) {
-      return res.json({ availableSlots: [] });
-    }
+    // Bloklu zamanları getir
+    const blockedTimes = await BlockedTime.find({
+      businessId: storeOwner.businessId._id,
+      date: { $gte: startOfDay, $lte: endOfDay },
+      userId: providerUserId
+    });
 
     // Gün adını al
     const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const dayName = dayNames[new Date(date).getDay()];
-    const daySchedule = workingHours[dayName];
 
-    if (!daySchedule || !daySchedule.enabled) {
+    const isValidSchedule = (s) => {
+      return s && !s.isClosed &&
+        typeof s.start === 'string' && s.start.includes(':') &&
+        typeof s.end === 'string' && s.end.includes(':');
+    };
+
+    // Çalışma saatlerini belirle: öncelik personel -> mağaza sahibi; owner için Business fallback
+    let daySchedule = null;
+
+    if (providerUserId && providerUserId.toString() === storeOwner._id.toString()) {
+      const ownerHours = storeOwner.workingHours || null;
+      const bizHours = business ? business.workingHours : null;
+      daySchedule = ownerHours ? ownerHours[dayName] : null;
+      if (!isValidSchedule(daySchedule) && bizHours) {
+        daySchedule = bizHours[dayName];
+      }
+    } else {
+      const staff = Array.isArray(staffUsers) ? staffUsers.find(s => s._id.toString() === providerUserId.toString()) : null;
+      const staffHours = staff && staff.workingHours ? staff.workingHours : null;
+      daySchedule = staffHours ? staffHours[dayName] : null;
+    }
+
+    if (!isValidSchedule(daySchedule)) {
       return res.json({ availableSlots: [] });
     }
 
+    const startStr = daySchedule.start;
+    const endStr = daySchedule.end;
+
     // Müsait saatleri hesapla
-    const serviceDuration = (typeof service === 'object' && service !== null) ? (service.duration || 60) : 60;
+    const serviceDuration = (typeof service === 'object' && service !== null) ? (Number(service.duration) || 60) : 60;
     const availableSlots = [];
     
-    const [startHour, startMinute] = daySchedule.start.split(':').map(Number);
-    const [endHour, endMinute] = daySchedule.end.split(':').map(Number);
+    const [startHour, startMinute] = startStr.split(':').map(Number);
+    const [endHour, endMinute] = endStr.split(':').map(Number);
     
     let currentTime = startHour * 60 + startMinute; // dakika cinsinden
     const endTime = endHour * 60 + endMinute;
+
+    const toMinutes = (t) => {
+      if (!t || typeof t !== 'string') return null;
+      const parts = t.split(':');
+      if (parts.length !== 2) return null;
+      const h = Number(parts[0]);
+      const m = Number(parts[1]);
+      if (Number.isNaN(h) || Number.isNaN(m)) return null;
+      return h * 60 + m;
+    };
 
     while (currentTime + serviceDuration <= endTime) {
       const hour = Math.floor(currentTime / 60);
       const minute = currentTime % 60;
       const timeSlot = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
       
-      // Bu saatte randevu var mı kontrol et
-      const isBooked = existingAppointments.some(apt => apt.time === timeSlot);
+      // Bu zaman aralığında randevu veya bloklu zaman var mı kontrol et (çakışma)
+      const candStart = currentTime;
+      const candEnd = currentTime + serviceDuration;
+
+      const overlapsAppointment = existingAppointments.some(apt => {
+        const aptStart = toMinutes(apt.startTime);
+        const aptEnd = toMinutes(apt.endTime);
+        if (aptStart == null || aptEnd == null) return false;
+        return aptEnd > candStart && candEnd > aptStart;
+      });
+
+      const overlapsBlocked = blockedTimes.some(bt => {
+        const btStart = toMinutes(bt.startTime);
+        const btEnd = toMinutes(bt.endTime);
+        if (btStart == null || btEnd == null) return false;
+        return btEnd > candStart && candEnd > btStart;
+      });
       
-      if (!isBooked) {
+      if (!overlapsAppointment && !overlapsBlocked) {
         availableSlots.push(timeSlot);
       }
       
@@ -3861,19 +4465,52 @@ app.get('/api/public/store/:storeName/staff', async (req, res) => {
     const storeOwner = await User.findOne({
       'storeSettings.enabled': true,
       'storeSettings.storeName': storeName.trim()
-    }).populate('businessId');
+    });
 
     if (!storeOwner || !storeOwner.storeSettings || !storeOwner.storeSettings.enabled) {
       return res.status(404).json({ error: 'Mağaza bulunamadı veya aktif değil' });
     }
 
-    // Personel listesini döndür
-    const staff = storeOwner.businessId && storeOwner.businessId.staff ? 
-      storeOwner.businessId.staff.map(member => ({
-        id: member._id,
-        name: member.name,
-        specialties: member.specialties || []
-      })) : [];
+    // Personelleri User koleksiyonundan çek (public veri)
+    const staffUsers = await User.find({
+      userType: 'staff',
+      businessId: storeOwner.businessId
+    }).select('name services workingHours');
+
+    // Owner'ı da sağlayıcı olarak ekle (etiket: İşletme Sahibi)
+    const ownerEntry = {
+      id: storeOwner._id,
+      name: 'İşletme Sahibi',
+      isOwner: true,
+      specialties: [],
+      services: Array.isArray(storeOwner.services)
+        ? storeOwner.services.filter(s => s.showInStore !== false)
+          .map(s => ({
+            id: s.id || s._id || undefined,
+            name: s.name,
+            duration: s.duration,
+            price: s.price,
+            showInStore: s.showInStore !== false
+          }))
+        : []
+    };
+
+    const staff = [ownerEntry, ...(staffUsers || []).map(u => ({
+      id: u._id,
+      name: u.name,
+      isOwner: false,
+      specialties: [],
+      services: Array.isArray(u.services)
+        ? u.services.filter(s => s.showInStore !== false)
+          .map(s => ({
+            id: s.id || s._id || undefined,
+            name: s.name,
+            duration: s.duration,
+            price: s.price,
+            showInStore: s.showInStore !== false
+          }))
+        : []
+    }))];
 
     res.json({ staff });
 
