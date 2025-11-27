@@ -249,7 +249,6 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
     if (!this.password) return false;
     return await bcrypt.compare(candidatePassword, this.password);
   } catch (error) {
-    console.warn('comparePassword hata:', error?.message || error);
     return false;
   }
 };
