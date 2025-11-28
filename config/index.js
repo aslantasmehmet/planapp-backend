@@ -1,10 +1,19 @@
 require('dotenv').config();
 
+function parseList(str) {
+  if (!str) return [];
+  return String(str)
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+}
+
 const config = {
   PORT: process.env.PORT || 3001,
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET || 'your-secret-key',
   SHORTLINK_BASE_URL: process.env.SHORTLINK_BASE_URL || '',
+  CORS_ORIGINS: parseList(process.env.CORS_ORIGINS),
   MUTLUCELL: {
     USERNAME: process.env.MUTLUCELL_USERNAME || '',
     PASSWORD: process.env.MUTLUCELL_PASSWORD || '',
