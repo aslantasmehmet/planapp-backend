@@ -1,30 +1,36 @@
 const mongoose = require('mongoose');
-const { MONGODB_URI } = require('./index');
 const logger = require('../utils/logger');
+const { MONGODB_URI } = require('./index');
+
+mongoose.set('strictQuery', true);
+
+const options = {
+  serverSelectionTimeoutMS: 5000,
+  connectTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 10,
+  retryWrites: true,
+  autoIndex: false,
+};
 
 async function connectDB() {
   try {
-    if (!MONGODB_URI || !String(MONGODB_URI).trim()) {
-      logger.error('MONGODB_URI not set');
-      throw new Error('MONGODB_URI missing');
-    }
-    let info = {};
-    try {
-      const u = new URL(MONGODB_URI);
-      info = { protocol: u.protocol, host: u.host, pathname: u.pathname };
-    } catch (_) {}
-    logger.info('Connecting to MongoDB', info);
-    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
-    logger.info('MongoDB connected');
-    try {
-      mongoose.connection.on('error', (e) => logger.error('MongoDB connection event error', e));
-      mongoose.connection.on('disconnected', () => logger.warn('MongoDB disconnected'));
-      mongoose.connection.on('reconnected', () => logger.info('MongoDB reconnected'));
-    } catch (_) {}
+    await mongoose.connect(MONGODB_URI, options);
+    try { logger.info('MongoDB bağlantısı kuruldu'); } catch (_) {}
   } catch (err) {
-    logger.error('MongoDB connection error', err);
+    try { logger.error('MongoDB bağlantısı başarısız', err); } catch (_) {}
     throw err;
   }
 }
+
+mongoose.connection.on('connected', () => {
+  try { logger.info('MongoDB connected'); } catch (_) {}
+});
+mongoose.connection.on('error', (err) => {
+  try { logger.error('MongoDB connection error', err); } catch (_) {}
+});
+mongoose.connection.on('disconnected', () => {
+  try { logger.warn('MongoDB disconnected'); } catch (_) {}
+});
 
 module.exports = { connectDB };

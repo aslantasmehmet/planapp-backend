@@ -29,6 +29,7 @@ const { errorHandler } = require('./middlewares/errorHandler');
 const app = express();
 // Dinamik JSON yanıtlarında 304 dönen ETag davranışını kapat
 app.set('etag', false);
+app.disable('x-powered-by');
 const PORT = config.PORT;
 // Proxy arkasında doğru protokol/host bilgisi için
 app.set('trust proxy', true);
@@ -52,13 +53,34 @@ connectDB();
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-// CORS yapılandırması dinamik olarak aşağıda eklenecek
+const defaultOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://planyapp.com.tr'];
+const vercelPattern = /^https?:\/\/.*\.vercel\.app$/;
+const envOrigins = Array.isArray(config.CORS_ORIGINS) ? config.CORS_ORIGINS : [];
+const allowedOrigins = [...defaultOrigins, vercelPattern, ...envOrigins];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    const ok = allowedOrigins.some(o => (o instanceof RegExp ? o.test(origin) : o === origin));
+    return ok ? callback(null, true) : callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
 app.use(morgan('combined', {
   stream: { write: (message) => logger.info('http', { message: message.trim() }) }
 }));
+const compression = require('compression');
+app.use(compression());
 app.use(express.json({ limit: '10mb' })); // Base64 resimler için limit artırıldı
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+const rateLimit = require('express-rate-limit');
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use('/api/auth', authLimiter);
 
 
 
@@ -68,21 +90,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Routes
 // Katmanlı mimari: taşınan route modüllerini bağla
- // CORS origin listesini env ile genişlet
- const defaultOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://planyapp.com.tr'];
- const envOrigins = Array.isArray(config.CORS_ORIGINS) ? config.CORS_ORIGINS : [];
- const corsMatchers = [...defaultOrigins, ...envOrigins, /^https?:\/\/.*\.vercel\.app$/];
- app.use(cors({
-   origin(origin, callback) {
-     if (!origin) return callback(null, true);
-     const ok = corsMatchers.some(o => (typeof o === 'string' && o === origin) || (o instanceof RegExp && o.test(origin)));
-     if (ok) return callback(null, true);
-     return callback(new Error('Not allowed by CORS'));
-   },
-   credentials: true
- }));
- logger.info('CORS origins', { origins: envOrigins });
-
  app.use('/api/auth', require('./routes/auth'));
  app.use('/api/blocked-times', require('./routes/blockedTimes'));
   app.use('/api/appointments', require('./routes/appointments'));
@@ -99,10 +106,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
   app.use('/', require('./routes/network'));
   app.use('/api/staff', require('./routes/staff'));
   app.use('/api/services', require('./routes/services'));
- app.use('/api/business', require('./routes/business'));
- app.use('/api/premium', require('./routes/premium'));
- app.use('/api/plans', require('./routes/plans'));
-app.get('/api/health', (req, res) => {
+  app.use('/api/business', require('./routes/business'));
+  app.use('/api/premium', require('./routes/premium'));
+  app.use('/api/plans', require('./routes/plans'));
+  app.get('/api/health', (req, res) => {
   try {
     res.json({ status: 'OK', message: 'Server çalışıyor' });
   } catch (error) {
@@ -110,7 +117,10 @@ app.get('/api/health', (req, res) => {
   }
 });
 
-// Error handling middleware (routes sonrası)
+// 404 yakalama
+app.use((req, res) => {
+  res.status(404).json({ error: 'Bulunamadı' });
+});
 app.use(errorHandler);
 
 // Sunucunun dış (egress) IP’sini öğrenmek için yardımcı endpoint
@@ -294,9 +304,35 @@ app.use(errorHandler);
 
 // Moved to routes/appointmentRequests.js: GET /api/appointment-requests/:storeOwnerId
 
-const server = app.listen(PORT, () => {
-  logger.info(`Server ${PORT} portunda çalışıyor`);
-});
+let server = null;
+if (require.main === module) {
+  server = app.listen(PORT, () => {
+    logger.info(`Server ${PORT} portunda çalışıyor`);
+  });
+  function shutdown(signal) {
+    try {
+      logger.warn(`Shutdown requested by ${signal}`);
+      server.close(() => {
+        try {
+          mongoose.connection.close(false).then(() => {
+            logger.info('MongoDB connection closed');
+            process.exit(0);
+          }).catch(() => process.exit(0));
+        } catch (_) {
+          process.exit(0);
+        }
+      });
+      setTimeout(() => {
+        logger.error('Forced shutdown after timeout');
+        process.exit(1);
+      }, 10000);
+    } catch (_) {
+      process.exit(1);
+    }
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
 // Global error handler
 process.on('uncaughtException', (error) => {
@@ -307,32 +343,9 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection', { reason, promise: 'unserializable' });
 });
 
-function shutdown(signal) {
-  try {
-    logger.warn(`Shutdown requested by ${signal}`);
-    server.close(() => {
-      try {
-        mongoose.connection.close(false).then(() => {
-          logger.info('MongoDB connection closed');
-          process.exit(0);
-        }).catch(() => process.exit(0));
-      } catch (_) {
-        process.exit(0);
-      }
-    });
-    setTimeout(() => {
-      logger.error('Forced shutdown after timeout');
-      process.exit(1);
-    }, 10000);
-  } catch (_) {
-    process.exit(1);
-  }
-}
-
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
-
 // Randevuya ödeme ekle
 // Taşındı: /api/appointments/:id/payments POST -> routes/appointments.js
 
 // Taşındı: SMS gönderim servisleri -> services/smsService.js
+
+module.exports = app;
