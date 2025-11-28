@@ -58,6 +58,20 @@ const businessSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  locationLat: {
+    type: Number
+  },
+  locationLon: {
+    type: Number
+  },
+  locationVerified: {
+    type: Boolean,
+    default: false
+  },
+  locationMethod: {
+    type: String,
+    trim: true
+  },
   isActive: {
     type: Boolean,
     default: true
