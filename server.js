@@ -52,23 +52,13 @@ connectDB();
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'https://planyapp.com.tr',
-    /^https?:\/\/.*\.vercel\.app$/
-  ],
-  credentials: true
-}));
+// CORS yapılandırması dinamik olarak aşağıda eklenecek
 app.use(morgan('combined', {
   stream: { write: (message) => logger.info('http', { message: message.trim() }) }
 }));
 app.use(express.json({ limit: '10mb' })); // Base64 resimler için limit artırıldı
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Error handling middleware
-app.use(errorHandler);
 
 
 
@@ -78,6 +68,21 @@ app.use(errorHandler);
 
 // Routes
 // Katmanlı mimari: taşınan route modüllerini bağla
+ // CORS origin listesini env ile genişlet
+ const defaultOrigins = ['http://localhost:3000', 'http://localhost:3001', 'https://planyapp.com.tr'];
+ const envOrigins = Array.isArray(config.CORS_ORIGINS) ? config.CORS_ORIGINS : [];
+ const corsMatchers = [...defaultOrigins, ...envOrigins, /^https?:\/\/.*\.vercel\.app$/];
+ app.use(cors({
+   origin(origin, callback) {
+     if (!origin) return callback(null, true);
+     const ok = corsMatchers.some(o => (typeof o === 'string' && o === origin) || (o instanceof RegExp && o.test(origin)));
+     if (ok) return callback(null, true);
+     return callback(new Error('Not allowed by CORS'));
+   },
+   credentials: true
+ }));
+ logger.info('CORS origins', { origins: envOrigins });
+
  app.use('/api/auth', require('./routes/auth'));
  app.use('/api/blocked-times', require('./routes/blockedTimes'));
   app.use('/api/appointments', require('./routes/appointments'));
@@ -104,6 +109,9 @@ app.get('/api/health', (req, res) => {
     res.status(500).json({ error: 'Sunucu hatası' });
   }
 });
+
+// Error handling middleware (routes sonrası)
+app.use(errorHandler);
 
 // Sunucunun dış (egress) IP’sini öğrenmek için yardımcı endpoint
 // Taşındı: /api/network/public-ip -> routes/network.js
@@ -286,7 +294,7 @@ app.get('/api/health', (req, res) => {
 
 // Moved to routes/appointmentRequests.js: GET /api/appointment-requests/:storeOwnerId
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`Server ${PORT} portunda çalışıyor`);
 });
 
@@ -298,6 +306,31 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection', { reason, promise: 'unserializable' });
 });
+
+function shutdown(signal) {
+  try {
+    logger.warn(`Shutdown requested by ${signal}`);
+    server.close(() => {
+      try {
+        mongoose.connection.close(false).then(() => {
+          logger.info('MongoDB connection closed');
+          process.exit(0);
+        }).catch(() => process.exit(0));
+      } catch (_) {
+        process.exit(0);
+      }
+    });
+    setTimeout(() => {
+      logger.error('Forced shutdown after timeout');
+      process.exit(1);
+    }, 10000);
+  } catch (_) {
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Randevuya ödeme ekle
 // Taşındı: /api/appointments/:id/payments POST -> routes/appointments.js
