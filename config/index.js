@@ -1,19 +1,14 @@
 require('dotenv').config();
 
-function parseList(str) {
-  if (!str) return [];
-  return String(str)
-    .split(',')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
-}
-
 const config = {
   PORT: process.env.PORT || 3001,
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET || 'your-secret-key',
   SHORTLINK_BASE_URL: process.env.SHORTLINK_BASE_URL || '',
-  CORS_ORIGINS: parseList(process.env.CORS_ORIGINS),
+  CORS_ORIGINS: (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
   MUTLUCELL: {
     USERNAME: process.env.MUTLUCELL_USERNAME || '',
     PASSWORD: process.env.MUTLUCELL_PASSWORD || '',
@@ -24,5 +19,11 @@ const config = {
   },
 };
 
-module.exports = config;
+if (!config.MONGODB_URI) {
+  throw new Error('MONGODB_URI environment variable is required');
+}
+if (!process.env.JWT_SECRET || config.JWT_SECRET === 'your-secret-key') {
+  throw new Error('JWT_SECRET environment variable is required');
+}
 
+module.exports = config;

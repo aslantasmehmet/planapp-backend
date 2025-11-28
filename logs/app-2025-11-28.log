@@ -123,3 +123,66 @@
 {"time":"2025-11-28T11:25:40.317Z","level":"info","msg":"MongoDB connected"}
 {"time":"2025-11-28T11:26:00.642Z","level":"info","msg":"Connecting to MongoDB","meta":{"protocol":"mongodb+srv:","host":"cluster0.q85zqj1.mongodb.net","pathname":"/planapp"}}
 {"time":"2025-11-28T11:26:02.650Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T11:48:36.107Z","level":"info","msg":"Connecting to MongoDB","meta":{"protocol":"mongodb+srv:","host":"cluster0.q85zqj1.mongodb.net","pathname":"/planapp"}}
+{"time":"2025-11-28T11:48:36.162Z","level":"info","msg":"CORS origins","meta":{"origins":[]}}
+{"time":"2025-11-28T11:48:36.257Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T11:48:38.049Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T11:51:28.748Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T11:51:44.703Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:11:51:44 +0000] \"GET /api/auth/profile HTTP/1.1\" 200 547 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T11:51:44.838Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:11:51:44 +0000] \"GET /api/staff HTTP/1.1\" 200 1599 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T11:51:44.969Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:11:51:44 +0000] \"GET /api/appointments HTTP/1.1\" 200 2410 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T11:51:46.264Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:11:51:46 +0000] \"GET /api/business HTTP/1.1\" 200 3065496 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T11:51:46.965Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:11:51:46 +0000] \"GET /api/business HTTP/1.1\" 200 3065496 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T11:51:47.444Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:11:51:47 +0000] \"GET /api/business HTTP/1.1\" 200 3065496 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T11:51:48.900Z","level":"info","msg":"http","meta":{"message":"::ffff:127.0.0.1 - - [28/Nov/2025:11:51:48 +0000] \"GET /api/business HTTP/1.1\" 200 3065496 \"http://localhost:3000/dashboard/appointments\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:10:53.869Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:11:05.193Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:11:16.936Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:11:18.892Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:11:18.894Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:17:03.444Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:17:05.349Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:17:05.352Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:17:36.059Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:17:37.776Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:17:37.778Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:18:14.507Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:18:16.504Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:18:16.507Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:18:21.924Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:18:23.752Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:18:23.754Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:23:24.485Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:23:26.140Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:23:26.142Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:24:08.578Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:24:08.579Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:25:23.723Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:23 +0000] \"GET /api/auth/profile HTTP/1.1\" 200 547 \"http://localhost:3000/dashboard/services\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:23.844Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:23 +0000] \"GET /api/services HTTP/1.1\" 200 459 \"http://localhost:3000/dashboard/services\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:25.645Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:25 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/services\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:26.308Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:26 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/services\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:27.290Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:27 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/services\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:28.310Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:28 +0000] \"GET /api/auth/profile HTTP/1.1\" 200 547 \"http://localhost:3000/dashboard\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:28.719Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:28 +0000] \"GET /api/auth/profile HTTP/1.1\" 200 547 \"http://localhost:3000/dashboard\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:30.699Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:30 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:31.308Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:31 +0000] \"GET /api/auth/profile HTTP/1.1\" 200 547 \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:31.490Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:31 +0000] \"GET /api/auth/profile HTTP/1.1\" 200 547 \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:31.690Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:31 +0000] \"GET /api/appointments?staffId=691dc505541ff6dd9e640f7e HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:31.999Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:31 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.169Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/appointments?staffId=691dc505541ff6dd9e640f7e HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.512Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/services HTTP/1.1\" 200 459 \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.536Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/staff HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.623Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.659Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/appointments?staffId=691dc505541ff6dd9e640f7e HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.813Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/services HTTP/1.1\" 200 459 \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:32.843Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:32 +0000] \"GET /api/staff HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:33.104Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:33 +0000] \"GET /api/appointments?staffId=691dc505541ff6dd9e640f7e HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:33.110Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:33 +0000] \"GET /api/services HTTP/1.1\" 200 459 \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:33.153Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:33 +0000] \"GET /api/staff HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:33.409Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:33 +0000] \"GET /api/services HTTP/1.1\" 200 459 \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:25:33.441Z","level":"info","msg":"http","meta":{"message":"::1 - - [28/Nov/2025:12:25:33 +0000] \"GET /api/staff HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36\""}}
+{"time":"2025-11-28T12:28:48.656Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-28T12:28:50.347Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:28:50.351Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-28T12:29:46.305Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-28T12:29:46.306Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
