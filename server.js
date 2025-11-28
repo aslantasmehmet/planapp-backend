@@ -3,26 +3,11 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const jwt = require('jsonwebtoken');
-const path = require('path');
-const fs = require('fs');
-const https = require('https');
-const http = require('http');
-const { URL } = require('url');
-const crypto = require('crypto');
 const logger = require('./utils/logger');
 
-const User = require('./models/User');
-const Appointment = require('./models/Appointment');
-const Business = require('./models/Business');
-const BlockedTime = require('./models/BlockedTime');
-const AppointmentRequest = require('./models/AppointmentRequest');
-const ContactMessage = require('./models/ContactMessage');
-const SmsLog = require('./models/SmsLog');
-const OtpCode = require('./models/OtpCode');
 require('dotenv').config();
 const config = require('./config');
-const { connectDB } = require('./config/db');
+const { connectDB, getDbDiagnostics } = require('./config/db');
 const { authenticateToken } = require('./middlewares/auth');
 const { errorHandler } = require('./middlewares/errorHandler');
 
@@ -32,21 +17,11 @@ app.set('etag', false);
 app.disable('x-powered-by');
 const PORT = config.PORT;
 // Proxy arkasında doğru protokol/host bilgisi için
-app.set('trust proxy', true);
-// Basit bellek içi kısa-link depolama
-const shortLinks = new Map();
+app.set('trust proxy', 1);
 const JWT_SECRET = config.JWT_SECRET;
-// Mutlucell yapılandırmasını eski değişken adları ile eşleştir
-const MUTLUCELL_USERNAME = config.MUTLUCELL.USERNAME;
-const MUTLUCELL_PASSWORD = config.MUTLUCELL.PASSWORD;
-const MUTLUCELL_ORIGINATOR = config.MUTLUCELL.ORIGINATOR;
-const MUTLUCELL_API_URL = config.MUTLUCELL.API_URL;
-const MUTLUCELL_VALIDITY = config.MUTLUCELL.VALIDITY; // dakika cinsinden
-const MUTLUCELL_ALLOW_INSECURE_TLS = config.MUTLUCELL.ALLOW_INSECURE_TLS;
-// Kısa linkler için public base URL (örn: https://planyapp.com.tr)
-const SHORTLINK_BASE_URL = config.SHORTLINK_BASE_URL;
 
 // MongoDB bağlantısı
+try { console.log('DB connect initiated', { hasUri: !!process.env.MONGODB_URI, hasJwt: !!process.env.JWT_SECRET }); } catch (_) {}
 connectDB();
 
 // Middleware
@@ -78,7 +53,12 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  keyGenerator: (req, res) => {
+    const ip = String(req.ip || '').replace(/:\d+[^:]*$/, '');
+    return ip;
+  },
+  validate: { trustProxy: false }
 });
 app.use('/api/auth', authLimiter);
 
@@ -109,11 +89,37 @@ app.use('/api/auth', authLimiter);
   app.use('/api/business', require('./routes/business'));
   app.use('/api/premium', require('./routes/premium'));
   app.use('/api/plans', require('./routes/plans'));
-  app.get('/api/health', (req, res) => {
+app.get('/api/health', (req, res) => {
   try {
-    res.json({ status: 'OK', message: 'Server çalışıyor' });
+    const mongoState = mongoose.connection && mongoose.connection.readyState;
+    const mongo = mongoState === 1 ? 'connected' : (mongoState === 2 ? 'connecting' : 'disconnected');
+    try {
+      if (mongo !== 'connected') {
+        const diag = getDbDiagnostics();
+        console.log('Health check mongo state', { state: mongo, lastError: diag && diag.lastError && diag.lastError.message, uri: diag && diag.uri });
+      }
+    } catch (_) {}
+    res.json({ status: 'OK', message: 'Server çalışıyor', mongo });
   } catch (error) {
     res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
+app.get('/api/test-mongo', async (req, res) => {
+  try {
+    if (!mongoose.connection || mongoose.connection.readyState !== 1) {
+      return res.status(500).json({ status: 'ERROR', message: 'MongoDB not connected' });
+    }
+    let pingResult = null;
+    try {
+      pingResult = await mongoose.connection.db.admin().ping();
+    } catch (_) {
+      await mongoose.connection.db.listCollections().toArray();
+      pingResult = { ok: 1 };
+    }
+    return res.json({ status: 'OK', message: 'MongoDB connected', ping: pingResult });
+  } catch (error) {
+    return res.status(500).json({ status: 'ERROR', message: 'MongoDB ping failed', error: error.message });
   }
 });
 
