@@ -1,17 +1,9 @@
 {
   "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "api/index.js",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/api/index.js"
-      // TÜM istekleri (/) Vercel'ın Serverless Fonksiyonu olarak tanıdığı
-      // /api/index.js dosyasına yönlendirir.
+      "source": "/(.*)",
+      "destination": "/api/index.js"
     }
   ]
 }
