@@ -48,16 +48,13 @@ app.use(compression());
 app.use(express.json({ limit: '10mb' })); // Base64 resimler için limit artırıldı
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req, res) => {
-    const ip = String(req.ip || '').replace(/:\d+[^:]*$/, '');
-    return ip;
-  },
+  keyGenerator: (req, res) => ipKeyGenerator(req.ip),
   validate: { trustProxy: false }
 });
 app.use('/api/auth', authLimiter);
