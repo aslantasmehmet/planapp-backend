@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Appointment = require('../models/Appointment');
+const AppointmentRepeat = require('../models/AppointmentRepeat');
 const Business = require('../models/Business');
 const SmsLog = require('../models/SmsLog');
 const { sendSms } = require('../services/smsService');
@@ -190,6 +191,10 @@ async function create(req, res) {
     delete appointmentData.selectedStaff;
     const appointment = new Appointment(appointmentData);
     await appointment.save();
+
+    try {
+      await AppointmentRepeat.create({ appointmentId: appointment._id, isRepeat: !!req.body.isRepeat });
+    } catch (_) {}
 
     try {
       if (!appointment.isBlocked) {
@@ -417,4 +422,82 @@ async function addPayment(req, res) {
   }
 }
 
-module.exports = { list, create, update, remove, today, sendSmsGeneric, addPayment };
+async function listRepeats(req, res) {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user || !user.businessId) return res.status(400).json({ error: 'Kullanıcının işletme bilgisi bulunamadı' });
+
+    const { clientName, clientPhone, clientEmail } = req.query || {};
+    const query = { businessId: user.businessId };
+    const or = [];
+    if (clientName) or.push({ clientName });
+    if (clientPhone) or.push({ clientPhone });
+    if (clientEmail) or.push({ clientEmail });
+    if (or.length > 0) query.$or = or;
+
+    const appointments = await Appointment.find(query).sort({ date: -1, startTime: -1 });
+    const ids = appointments.map((a) => a._id);
+    if (ids.length === 0) return res.json({ repeats: [] });
+
+    const repeats = await AppointmentRepeat.find({ appointmentId: { $in: ids } });
+    const repeatMap = new Map(repeats.map((r) => [String(r.appointmentId), r]));
+    const result = appointments
+      .filter((a) => repeatMap.has(String(a._id)))
+      .map((a) => ({ appointmentId: a._id, isRepeat: !!repeatMap.get(String(a._id))?.isRepeat, appointment: a }));
+    return res.json({ repeats: result });
+  } catch (error) {
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+}
+
+async function updateRepeat(req, res) {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user || !user.businessId) return res.status(400).json({ error: 'Kullanıcının işletme bilgisi bulunamadı' });
+
+    const appointmentId = req.params.appointmentId;
+    if (!appointmentId) return res.status(400).json({ error: 'Randevu kimliği gereklidir' });
+
+    const appointment = await Appointment.findOne({ _id: appointmentId, businessId: user.businessId });
+    if (!appointment) return res.status(404).json({ error: 'Randevu bulunamadı veya yetkiniz yok' });
+
+    const isRepeat = !!req.body.isRepeat;
+    const repeatDoc = await AppointmentRepeat.findOneAndUpdate(
+      { appointmentId: appointment._id },
+      { isRepeat },
+      { upsert: true, new: true }
+    );
+    return res.json({ success: true, repeat: { appointmentId: appointment._id, isRepeat: repeatDoc.isRepeat } });
+  } catch (error) {
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+}
+
+async function listRepeatCustomers(req, res) {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user || !user.businessId) return res.status(400).json({ error: 'Kullanıcının işletme bilgisi bulunamadı' });
+
+    const appts = await Appointment.find({ businessId: user.businessId }).select('_id clientName clientPhone clientEmail');
+    const idMap = new Map(appts.map(a => [String(a._id), a]));
+    const ids = appts.map(a => a._id);
+    if (ids.length === 0) return res.json({ customers: [] });
+
+    const repeats = await AppointmentRepeat.find({ appointmentId: { $in: ids }, isRepeat: true });
+    const seen = new Set();
+    const customers = [];
+    for (const r of repeats) {
+      const a = idMap.get(String(r.appointmentId));
+      if (!a) continue;
+      const key = a.clientPhone || `${a.clientName}|${a.clientEmail}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      customers.push({ clientPhone: a.clientPhone || '', clientName: a.clientName || '', clientEmail: a.clientEmail || '' });
+    }
+    return res.json({ customers });
+  } catch (error) {
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+}
+
+module.exports = { list, create, update, remove, today, sendSmsGeneric, addPayment, listRepeats, updateRepeat, listRepeatCustomers };

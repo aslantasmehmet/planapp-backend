@@ -1,4 +1,4 @@
-// api/index.js dosyasının TAMAMI:
+// api/index.js
 
 const app = require('../server'); // Dikkat: '../server' kullanıyoruz çünkü server.js bir üstte
 

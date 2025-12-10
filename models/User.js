@@ -96,6 +96,17 @@ const userSchema = new mongoose.Schema({
     }],
     default: []
   },
+  campaigns: {
+    type: [{
+      id: { type: String, required: true },
+      name: { type: String, required: true, trim: true },
+      content: { type: String, default: '', trim: true },
+      sessionsCount: { type: Number, default: 0, min: 0 },
+      price: { type: Number, default: 0, min: 0 },
+      createdAt: { type: Date, default: Date.now }
+    }],
+    default: []
+  },
   messageTemplates: {
     type: [{
       id: String,

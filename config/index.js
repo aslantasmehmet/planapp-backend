@@ -9,6 +9,8 @@ const config = {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean),
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  DISABLE_OTP_IN_DEV: String(process.env.DISABLE_OTP_IN_DEV || 'true').toLowerCase() === 'true',
   MUTLUCELL: {
     USERNAME: process.env.MUTLUCELL_USERNAME || '',
     PASSWORD: process.env.MUTLUCELL_PASSWORD || '',
@@ -17,6 +19,10 @@ const config = {
     VALIDITY: process.env.MUTLUCELL_VALIDITY || '1440',
     ALLOW_INSECURE_TLS: String(process.env.MUTLUCELL_ALLOW_INSECURE_TLS || 'false').toLowerCase() === 'true',
   },
+  ENABLE_SESSION_SMS_CRON: String(process.env.ENABLE_SESSION_SMS_CRON || 'true').toLowerCase() === 'true',
+  SESSION_SMS_CRON_HOUR: Number(process.env.SESSION_SMS_CRON_HOUR ?? 2),
+  SESSION_SMS_CRON_MINUTE: Number(process.env.SESSION_SMS_CRON_MINUTE ?? 0),
+  SESSION_SMS_CRON_RUN_ON_START: String(process.env.SESSION_SMS_CRON_RUN_ON_START || 'false').toLowerCase() === 'true',
 };
 
 if (!config.MONGODB_URI) {

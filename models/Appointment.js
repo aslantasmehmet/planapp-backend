@@ -53,6 +53,16 @@ const appointmentSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  campaignId: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  sessionsCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   notes: {
     type: String,
     trim: true

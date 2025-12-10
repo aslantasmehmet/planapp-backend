@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Business = require('../models/Business');
 const OtpCode = require('../models/OtpCode');
-const { JWT_SECRET, MUTLUCELL } = require('../config');
+const { JWT_SECRET, MUTLUCELL, NODE_ENV, DISABLE_OTP_IN_DEV } = require('../config');
 const { sendSms } = require('../services/smsService');
 const { normalizeMsisdn, maskMsisdn } = require('../utils/phone');
 
@@ -70,6 +70,39 @@ async function registerInit(req, res) {
     const existingPhoneUser = await User.findOne({ phone: phoneStr });
     if (existingPhoneUser) {
       return res.status(400).json({ error: 'Bu telefon numarası ile zaten bir hesap var' });
+    }
+
+    const skipOtp = (NODE_ENV !== 'production') && DISABLE_OTP_IN_DEV;
+    if (skipOtp) {
+      const user = new User({
+        name,
+        email: emailNorm,
+        phone: phoneStr,
+        password: String(password),
+        userType: 'owner',
+        isPremium: false,
+        trialStart: new Date(),
+      });
+      await user.save();
+      if (user.userType === 'owner') {
+        user.businessId = user._id;
+        await user.save();
+      }
+      const token = jwt.sign({ userId: user._id.toString(), email: user.email, userType: user.userType }, JWT_SECRET, { expiresIn: '7d' });
+      return res.status(201).json({
+        message: 'Kayıt tamamlandı',
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          userType: user.userType,
+          businessId: user.businessId,
+          isPremium: user.isPremium,
+          trialStart: user.trialStart,
+        },
+      });
     }
 
     const msisdn = normalizeMsisdn(phone);
@@ -208,6 +241,23 @@ async function login(req, res) {
     if (!user) return res.status(404).json({ error: 'E-posta bulunamadı' });
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) return res.status(401).json({ error: 'Şifre yanlış' });
+
+    const skipOtpLogin = (NODE_ENV !== 'production') && DISABLE_OTP_IN_DEV;
+    if (skipOtpLogin) {
+      const token = jwt.sign({ userId: user._id.toString(), email: user.email, userType: user.userType }, JWT_SECRET, { expiresIn: '7d' });
+      return res.json({
+        message: 'Giriş başarılı',
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          userType: user.userType,
+          businessId: user.businessId,
+        },
+      });
+    }
 
     const msisdn = normalizeMsisdn(user.phone);
     if (!msisdn || msisdn.length < 10) {
