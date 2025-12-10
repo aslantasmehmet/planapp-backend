@@ -78,3 +78,7 @@
 {"time":"2025-12-10T08:27:19.514Z","level":"info","msg":"http","meta":{"message":"::1 - - [10/Dec/2025:08:27:19 +0000] \"GET /api/appointments?staffId=691dc505541ff6dd9e640f7e HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36\""}}
 {"time":"2025-12-10T08:27:19.805Z","level":"info","msg":"http","meta":{"message":"::1 - - [10/Dec/2025:08:27:19 +0000] \"GET /api/staff HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36\""}}
 {"time":"2025-12-10T08:27:22.167Z","level":"info","msg":"http","meta":{"message":"::1 - - [10/Dec/2025:08:27:22 +0000] \"GET /api/business HTTP/1.1\" 200 - \"http://localhost:3000/dashboard/owner\" \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36\""}}
+{"time":"2025-12-10T10:16:59.923Z","level":"warn","msg":"MongoDB disconnected"}
+{"time":"2025-12-10T10:16:59.952Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-12-10T11:03:15.674Z","level":"warn","msg":"MongoDB disconnected"}
+{"time":"2025-12-10T11:03:16.991Z","level":"info","msg":"MongoDB connected"}
