@@ -13,3 +13,8 @@
 {"time":"2025-11-29T14:01:21.293Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
 {"time":"2025-11-29T14:01:22.975Z","level":"info","msg":"MongoDB connected"}
 {"time":"2025-11-29T14:01:22.980Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
+{"time":"2025-11-29T15:24:41.922Z","level":"warn","msg":"MongoDB disconnected"}
+{"time":"2025-11-29T15:24:41.991Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-29T15:37:44.455Z","level":"info","msg":"Server 3001 portunda çalışıyor"}
+{"time":"2025-11-29T15:37:46.163Z","level":"info","msg":"MongoDB connected"}
+{"time":"2025-11-29T15:37:46.166Z","level":"info","msg":"MongoDB bağlantısı kuruldu"}
