@@ -72,7 +72,8 @@ async function registerInit(req, res) {
       return res.status(400).json({ error: 'Bu telefon numarası ile zaten bir hesap var' });
     }
 
-    const skipOtp = (NODE_ENV !== 'production') && DISABLE_OTP_IN_DEV;
+    const envLower = String(NODE_ENV || '').toLowerCase();
+    const skipOtp = (envLower === 'development') && DISABLE_OTP_IN_DEV;
     if (skipOtp) {
       const user = new User({
         name,
@@ -242,7 +243,8 @@ async function login(req, res) {
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) return res.status(401).json({ error: 'Şifre yanlış' });
 
-    const skipOtpLogin = (NODE_ENV !== 'production') && DISABLE_OTP_IN_DEV;
+    const envLowerLogin = String(NODE_ENV || '').toLowerCase();
+    const skipOtpLogin = (envLowerLogin === 'development') && DISABLE_OTP_IN_DEV;
     if (skipOtpLogin) {
       const token = jwt.sign({ userId: user._id.toString(), email: user.email, userType: user.userType }, JWT_SECRET, { expiresIn: '7d' });
       return res.json({

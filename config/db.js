@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const logger = require('../utils/logger');
 const { MONGODB_URI } = require('./index');
 
 let lastDbError = null;
@@ -25,30 +24,18 @@ const options = {
 
 async function connectDB() {
   try {
-    try { console.log('Mongo connecting to', sanitizeMongoUri(MONGODB_URI)); } catch (_) {}
+    if (!MONGODB_URI) {
+      return;
+    }
     await mongoose.connect(MONGODB_URI, options);
-    try { logger.info('MongoDB bağlantısı kuruldu'); } catch (_) {}
-    try { console.log('Mongo connected'); } catch (_) {}
   } catch (err) {
     lastDbError = err;
-    try { logger.error('MongoDB bağlantısı başarısız', err); } catch (_) {}
-    try { console.error('Mongo connect error', err && err.message); } catch (_) {}
     throw err;
   }
 }
 
-mongoose.connection.on('connected', () => {
-  try { logger.info('MongoDB connected'); } catch (_) {}
-  try { console.log('Mongo event connected'); } catch (_) {}
-});
 mongoose.connection.on('error', (err) => {
-  try { logger.error('MongoDB connection error', err); } catch (_) {}
   lastDbError = err;
-  try { console.error('Mongo event error', err && err.message); } catch (_) {}
-});
-mongoose.connection.on('disconnected', () => {
-  try { logger.warn('MongoDB disconnected'); } catch (_) {}
-  try { console.error('Mongo event disconnected'); } catch (_) {}
 });
 
 function getDbDiagnostics() {

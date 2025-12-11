@@ -2,8 +2,10 @@ require('dotenv').config();
 
 const config = {
   PORT: process.env.PORT || 3001,
-  MONGODB_URI: process.env.MONGODB_URI,
-  JWT_SECRET: process.env.JWT_SECRET || 'your-secret-key',
+  MONGODB_URI: process.env.MONGODB_URI || '',
+  JWT_SECRET: process.env.JWT_SECRET && String(process.env.JWT_SECRET).trim().length > 0
+    ? process.env.JWT_SECRET
+    : 'dev-only-secret-change-in-prod',
   SHORTLINK_BASE_URL: process.env.SHORTLINK_BASE_URL || '',
   CORS_ORIGINS: (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -24,12 +26,5 @@ const config = {
   SESSION_SMS_CRON_MINUTE: Number(process.env.SESSION_SMS_CRON_MINUTE ?? 0),
   SESSION_SMS_CRON_RUN_ON_START: String(process.env.SESSION_SMS_CRON_RUN_ON_START || 'false').toLowerCase() === 'true',
 };
-
-if (!config.MONGODB_URI) {
-  throw new Error('MONGODB_URI environment variable is required');
-}
-if (!process.env.JWT_SECRET || config.JWT_SECRET === 'your-secret-key') {
-  throw new Error('JWT_SECRET environment variable is required');
-}
 
 module.exports = config;

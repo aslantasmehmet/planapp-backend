@@ -2,8 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
-const morgan = require('morgan');
-const logger = require('./utils/logger');
+ 
 
 require('dotenv').config();
 const config = require('./config');
@@ -61,7 +60,7 @@ app.use(
   })
 );
 
-app.use(morgan('short'));
+ 
 
 const compression = require('compression');
 app.use(compression());
@@ -156,7 +155,6 @@ let server = null;
 
 if (require.main === module) {
   server = app.listen(PORT, () => {
-    logger.info(`Server ${PORT} portunda çalışıyor`);
   });
 
   function msUntil(hour, minute) {
@@ -191,13 +189,7 @@ if (require.main === module) {
         await salesController.runSessionReminders(fakeReq, fakeRes);
       }
 
-      logger.info('Seans hatırlatma işi tamamlandı', {
-        owners: owners.length,
-        processed: totalProcessed,
-        sent: totalSent,
-      });
     } catch (error) {
-      logger.error('Seans hatırlatma işi başarısız', { error });
     }
   }
 
@@ -240,12 +232,10 @@ if (require.main === module) {
     stopDailyReminders();
 
     if (!enabled) {
-      logger.info('Seans SMS cron devre dışı');
       return;
     }
 
     const delay = msUntil(hour, minute);
-    logger.info('Seans hatırlatma cron zamanlandı', { hour, minute });
 
     sessionReminderTimeout = setTimeout(() => {
       runSessionRemindersForAllBusinesses().finally(() => {
@@ -296,17 +286,14 @@ if (require.main === module) {
   };
 
   function shutdown(signal) {
-    logger.warn(`Shutdown requested by ${signal}`);
 
     server.close(() => {
       mongoose.connection.close(false).then(() => {
-        logger.info('MongoDB connection closed');
         process.exit(0);
       });
     });
 
     setTimeout(() => {
-      logger.error('Forced shutdown after timeout');
       process.exit(1);
     }, 10000);
   }
@@ -316,12 +303,10 @@ if (require.main === module) {
 }
 
 // Global error handler
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception', error);
+process.on('uncaughtException', () => {
 });
 
-process.on('unhandledRejection', (reason) => {
-  logger.error('Unhandled Rejection', { reason });
+process.on('unhandledRejection', () => {
 });
 
 module.exports = app;
