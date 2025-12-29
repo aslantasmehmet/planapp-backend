@@ -18,4 +18,12 @@ router.delete('/:id/avatar', authenticateToken, staffController.deleteStaffAvata
 router.post('/:staffId/services', authenticateToken, staffController.addStaffService);
 router.delete('/:staffId/services/:serviceId', authenticateToken, staffController.deleteStaffService);
 
+// Compensation
+router.get('/:id/compensation', authenticateToken, staffController.getCompensation);
+router.put('/:id/compensation', authenticateToken, staffController.upsertCompensation);
+
+// Staff payments
+router.get('/:id/payments', authenticateToken, staffController.listStaffPayments);
+router.post('/:id/payments', authenticateToken, staffController.createStaffPayment);
+
 module.exports = router;
