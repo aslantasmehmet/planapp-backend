@@ -414,9 +414,36 @@ async function addPayment(req, res) {
     if (!appointmentId) return res.status(400).json({ error: 'Randevu kimliği gereklidir' });
     if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'Geçerli bir ödeme tutarı gereklidir' });
 
+    const appointment = await Appointment.findOne({ _id: appointmentId, businessId: user.businessId });
+    if (!appointment) return res.status(404).json({ error: 'Randevu bulunamadı veya yetkiniz yok' });
+    if (Array.isArray(appointment.payments) && appointment.payments.length > 0) {
+      return res.status(400).json({ error: 'Bu randevu için ödeme zaten kaydedildi' });
+    }
+
     const paymentRecord = { amount: Number(amount), method: method || 'nakit', note: note || '', date: date ? new Date(date) : new Date(), recordedBy: user._id };
-    const updated = await Appointment.findByIdAndUpdate(appointmentId, { $push: { payments: paymentRecord }, $set: { updatedAt: new Date() } }, { new: true }).populate('createdBy', 'name userType');
-    return res.json({ appointment: updated });
+    appointment.payments = [...(appointment.payments || []), paymentRecord];
+    appointment.updatedAt = new Date();
+    await appointment.save();
+
+    try {
+      const CashEntry = require('../models/CashEntry');
+      const mtd = String(method) === 'kart' ? 'kart' : 'nakit';
+      const when = paymentRecord.date || new Date();
+      await CashEntry.create({
+        businessId: appointment.businessId,
+        createdBy: user._id,
+        type: 'income',
+        amount: Number(amount),
+        method: mtd,
+        note: note || 'Randevu ödemesi',
+        date: when,
+        status: 'Paid',
+        paidAt: when
+      });
+    } catch (_) {}
+
+    const populated = await Appointment.findById(appointment._id).populate('createdBy', 'name userType');
+    return res.json({ appointment: populated });
   } catch (error) {
     return res.status(500).json({ error: 'Ödeme eklenirken sunucu hatası oluştu' });
   }

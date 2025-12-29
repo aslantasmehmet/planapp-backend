@@ -48,7 +48,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
     let customers = await Customer.find(query).sort({ createdAt: -1 });
 
-    if ((!customers || customers.length === 0) && user.userType === 'owner') {
+    if (user.userType === 'owner') {
       const ownerCustomers = Array.isArray(user.customers) ? user.customers : [];
       const staffMembers = await User.find({ userType: 'staff', businessId: user.businessId }).select('customers _id');
       const allStaffCustomers = [];
@@ -57,18 +57,15 @@ router.get('/', authenticateToken, async (req, res) => {
         if (list.length > 0) allStaffCustomers.push(...list.map(c => ({ ...c, addedBy: s._id })));
       }
       const combined = [...ownerCustomers.map(c => ({ ...c, addedBy: user._id })), ...allStaffCustomers];
-      const byPhone = new Map();
-      for (const c of combined) {
-        if (!c) continue;
-        const key = c.phone || `${c.name}_${Math.random()}`;
-        if (!byPhone.has(key)) byPhone.set(key, c);
-      }
+      const existingByPhone = new Set((customers || []).map(c => String(c.phone || '').trim()).filter(Boolean));
       const docs = [];
-      for (const c of byPhone.values()) {
+      for (const c of combined) {
         if (!c || !c.name || !c.phone) continue;
+        const phoneKey = String(c.phone).trim();
+        if (existingByPhone.has(phoneKey)) continue;
         docs.push({
           name: String(c.name).trim(),
-          phone: String(c.phone).trim(),
+          phone: phoneKey,
           email: c.email ? String(c.email).trim() : '',
           businessId: effectiveBusinessId,
           createdBy: c.addedBy || user._id,
@@ -77,9 +74,7 @@ router.get('/', authenticateToken, async (req, res) => {
         });
       }
       if (docs.length > 0) {
-        try {
-          await Customer.insertMany(docs, { ordered: false });
-        } catch (e) {}
+        try { await Customer.insertMany(docs, { ordered: false }); } catch (e) {}
         customers = await Customer.find(query).sort({ createdAt: -1 });
       }
     }
@@ -101,6 +96,9 @@ router.get('/', authenticateToken, async (req, res) => {
           customer.totalAppointments = customerAppointments.length;
           customer.lastVisit = customerAppointments.length > 0 ? customerAppointments[0].date : null;
         }
+      }
+      for (const customer of customers) {
+        if (!customer.addedBy) customer.addedBy = customer.createdBy;
       }
     }
 
