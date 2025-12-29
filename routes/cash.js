@@ -152,6 +152,62 @@ router.post('/sync/income', authenticateToken, async (req, res) => {
   }
 });
 
+// Sync salary expenses from staff payments
+router.post('/sync/salary', authenticateToken, async (req, res) => {
+  try {
+    const businessId = await resolveBusinessId(req.user.userId);
+    if (!businessId) return res.status(404).json({ error: 'İşletme bilgileri bulunamadı' });
+
+    const { month } = req.body || {};
+    const StaffPayment = require('../models/StaffPayment');
+    const User = require('../models/User');
+
+    const query = { businessId, isSalary: true, status: 'Paid' };
+    if (month && /^\d{4}-\d{2}$/.test(String(month))) {
+      query.salaryMonth = String(month);
+    }
+
+    const salaries = await StaffPayment.find(query).lean();
+    let createdCount = 0;
+    for (const sp of salaries) {
+      const marker = `\\[SALARY:${String(sp.staffId)}:${String(sp.salaryMonth)}\\]`;
+      const existsExpense = await CashEntry.findOne({ businessId, type: 'expense', note: { $regex: marker } }).lean();
+      if (existsExpense) continue;
+      const amount = Number(sp.amount || 0) || 0;
+      if (!amount || amount <= 0) continue;
+      let staffName = '';
+      try { const sdoc = await User.findById(sp.staffId).select('name').lean(); staffName = sdoc?.name || ''; } catch (_) {}
+      const noteText = `Maaş ödemesi - ${staffName} - ${String(sp.salaryMonth || '')} [SALARY:${String(sp.staffId)}:${String(sp.salaryMonth)}]`;
+      let when = new Date();
+      const sm = String(sp.salaryMonth || '');
+      if (/^\d{4}-\d{2}$/.test(sm)) {
+        const parts = sm.split('-');
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        when = new Date(y, m - 1, 1);
+      } else if (sp.date) {
+        when = new Date(sp.date);
+      }
+      await CashEntry.create({
+        businessId,
+        createdBy: req.user.userId,
+        type: 'expense',
+        amount,
+        method: 'nakit',
+        note: noteText,
+        date: when,
+        status: 'Paid',
+        paidAt: when
+      });
+      createdCount++;
+    }
+
+    return res.json({ success: true, created: createdCount });
+  } catch (error) {
+    return res.status(500).json({ error: 'Sunucu hatası' });
+  }
+});
+
 module.exports = router;
 
 // Update cash entry status or fields

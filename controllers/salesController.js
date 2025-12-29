@@ -312,7 +312,7 @@ exports.getSalesByCustomer = async (req, res) => {
         const key = c._id?.toString?.() || c.id;
         if (key) {
           campaignMap.set(String(key), c.name || '');
-          campaignInfoMap.set(String(key), { name: c.name || '', sessionsCount: Number(c.sessionsCount) || 0 });
+          campaignInfoMap.set(String(key), { name: c.name || '', sessionsCount: Number(c.sessionsCount) || 0, serviceName: c.serviceName || '' });
         }
       });
     } catch (_) {}
@@ -323,7 +323,7 @@ exports.getSalesByCustomer = async (req, res) => {
           const key = c._id?.toString?.() || c.id;
           if (key && !campaignMap.has(String(key))) {
             campaignMap.set(String(key), c.name || '');
-            campaignInfoMap.set(String(key), { name: c.name || '', sessionsCount: Number(c.sessionsCount) || 0 });
+            campaignInfoMap.set(String(key), { name: c.name || '', sessionsCount: Number(c.sessionsCount) || 0, serviceName: c.serviceName || '' });
           }
         });
       }
@@ -335,10 +335,25 @@ exports.getSalesByCustomer = async (req, res) => {
           const key = c._id?.toString?.() || c.id;
           if (key && !campaignMap.has(String(key))) {
             campaignMap.set(String(key), c.name || '');
-            campaignInfoMap.set(String(key), { name: c.name || '', sessionsCount: Number(c.sessionsCount) || 0 });
+            campaignInfoMap.set(String(key), { name: c.name || '', sessionsCount: Number(c.sessionsCount) || 0, serviceName: c.serviceName || '' });
           }
         });
       });
+    } catch (_) {}
+
+    try {
+      const campaignIds = Array.from(new Set((sales || []).map(s => String(s.campaignId)).filter(Boolean)));
+      const missingIds = campaignIds.filter(id => !campaignInfoMap.has(id));
+      if (missingIds.length > 0) {
+        const docs = await Campaign.find({ _id: { $in: missingIds } }).select('_id name sessionsCount serviceName').lean();
+        for (const d of docs) {
+          const key = d._id?.toString?.();
+          if (key && !campaignInfoMap.has(key)) {
+            campaignMap.set(key, d.name || '');
+            campaignInfoMap.set(key, { name: d.name || '', sessionsCount: Number(d.sessionsCount) || 0, serviceName: d.serviceName || '' });
+          }
+        }
+      }
     } catch (_) {}
 
     const saleIds = sales.map(s => s._id).filter(Boolean);
@@ -358,7 +373,8 @@ exports.getSalesByCustomer = async (req, res) => {
       campaignName: campaignMap.get(String(s.campaignId)) || '',
       sessionsTotal: (campaignInfoMap.get(String(s.campaignId))?.sessionsCount) || 0,
       sessionsCompleted: completedBySale.get(String(s._id)) || 0,
-      sessionsRemaining: Math.max(0, ((campaignInfoMap.get(String(s.campaignId))?.sessionsCount) || 0) - (completedBySale.get(String(s._id)) || 0))
+      sessionsRemaining: Math.max(0, ((campaignInfoMap.get(String(s.campaignId))?.sessionsCount) || 0) - (completedBySale.get(String(s._id)) || 0)),
+      campaignServiceName: campaignInfoMap.get(String(s.campaignId))?.serviceName || ''
     }));
 
     return res.json({ sales: enriched });

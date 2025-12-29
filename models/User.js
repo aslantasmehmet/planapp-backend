@@ -20,6 +20,11 @@ const userSchema = new mongoose.Schema({
     required: [true, 'Telefon numarası gereklidir'],
     trim: true
   },
+  iban: {
+    type: String,
+    default: '',
+    trim: true
+  },
   password: {
     type: String,
     required: [true, 'Şifre gereklidir'],

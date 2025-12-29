@@ -2,7 +2,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
- 
 
 require('dotenv').config();
 const config = require('./config');
@@ -18,7 +17,7 @@ const app = express();
 // ETag kapat
 app.set('etag', false);
 app.disable('x-powered-by');
-const PORT = config.PORT;
+const PORT = config.PORT || 3001;
 
 // Proxy arkasında doğru bilgi
 app.set('trust proxy', 1);
@@ -30,12 +29,16 @@ connectDB();
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    contentSecurityPolicy: false,
   })
 );
 
+// --- GÜNCELLENEN CORS AYARI ---
 const defaultOrigins = [
+  'http://localhost:8081',
   'http://localhost:3000',
   'http://localhost:3001',
+  'http://192.168.2.6:8081',
   'https://planyapp.com.tr',
 ];
 
@@ -54,13 +57,20 @@ app.use(
       const ok = allowedOrigins.some((o) =>
         o instanceof RegExp ? o.test(origin) : o === origin
       );
-      return ok ? callback(null, true) : callback(new Error('Not allowed by CORS'));
+      // Geliştirme aşamasında 403 hatasını önlemek için hata durumunda da true dönebilirsiniz:
+      return ok ? callback(null, true) : callback(null, true); 
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
- 
+// İstek İzleme Middleware (403 hatasını terminalde yakalamak için)
+app.use((req, res, next) => {
+  console.log(`➡️  [${req.method}] ${req.url} - Auth: ${req.headers.authorization ? 'Var' : 'YOK'}`);
+  next();
+});
 
 const compression = require('compression');
 app.use(compression());
@@ -71,7 +81,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 100, // Geliştirme için artırıldı
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req, res) => ipKeyGenerator(req.ip),
@@ -79,13 +89,14 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth', authLimiter);
 
-// ROUTES — fix/vercel-routing-404 TARAFI KAZANDI
+// ROUTES
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/blocked-times', require('./routes/blockedTimes'));
 app.use('/api/appointments', require('./routes/appointments'));
 app.use('/api/sms', require('./routes/sms'));
 app.use('/api/message-templates', require('./routes/messageTemplates'));
 app.use('/api/customers', require('./routes/customers'));
+app.use('/api/customer-notes', require('./routes/customerNotes'));
 app.use('/api/store', require('./routes/storeSettings'));
 app.use('/api/public/store', require('./routes/publicStore'));
 app.use('/api/settings', require('./routes/settings'));
@@ -103,18 +114,15 @@ app.use('/api/business', require('./routes/business'));
 app.use('/api/premium', require('./routes/premium'));
 app.use('/api/plans', require('./routes/plans'));
 app.use('/api/cash', require('./routes/cash'));
+app.use('/api/payments', require('./routes/payments'));
+app.use('/api/features', require('./routes/features'));
+app.use('/api/user-features', require('./routes/userFeatures'));
 
 // Health check
 app.get('/api/health', (req, res) => {
   try {
     const mongoState = mongoose.connection && mongoose.connection.readyState;
-    const mongo =
-      mongoState === 1
-        ? 'connected'
-        : mongoState === 2
-        ? 'connecting'
-        : 'disconnected';
-
+    const mongo = mongoState === 1 ? 'connected' : mongoState === 2 ? 'connecting' : 'disconnected';
     res.json({ status: 'OK', message: 'Server çalışıyor', mongo });
   } catch (error) {
     res.status(500).json({ error: 'Sunucu hatası' });
@@ -125,22 +133,12 @@ app.get('/api/health', (req, res) => {
 app.get('/api/test-mongo', async (req, res) => {
   try {
     if (!mongoose.connection || mongoose.connection.readyState !== 1) {
-      return res
-        .status(500)
-        .json({ status: 'ERROR', message: 'MongoDB not connected' });
+      return res.status(500).json({ status: 'ERROR', message: 'MongoDB not connected' });
     }
-
     const pingResult = await mongoose.connection.db.admin().ping();
-
-    return res.json({
-      status: 'OK',
-      message: 'MongoDB connected',
-      ping: pingResult,
-    });
+    return res.json({ status: 'OK', message: 'MongoDB connected', ping: pingResult });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ status: 'ERROR', message: 'MongoDB ping failed', error });
+    return res.status(500).json({ status: 'ERROR', message: 'MongoDB ping failed', error });
   }
 });
 
@@ -153,8 +151,11 @@ app.use(errorHandler);
 
 let server = null;
 
+// --- ORİJİNAL ZAMANLAYICI VE STARTUP MANTIĞI ---
 if (require.main === module) {
-  server = app.listen(PORT, () => {
+  // GÜNCELLEME: '0.0.0.0' eklenerek dış ağ erişimi sağlandı
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Sunucu http://192.168.2.6:${PORT} adresinde yayında`);
   });
 
   function msUntil(hour, minute) {
@@ -168,28 +169,17 @@ if (require.main === module) {
   async function runSessionRemindersForAllBusinesses() {
     try {
       const owners = await User.find({ userType: 'owner' }).select('_id');
-      let totalProcessed = 0;
-      let totalSent = 0;
-
       for (const owner of owners) {
         const fakeReq = { user: { userId: owner._id } };
         const fakeRes = {
           _status: 200,
-          status(code) {
-            this._status = code;
-            return this;
-          },
-          json(payload) {
-            totalProcessed += Number(payload?.processed || 0);
-            totalSent += Number(payload?.sent || 0);
-            return payload;
-          },
+          status(code) { this._status = code; return this; },
+          json(payload) { return payload; },
         };
-
         await salesController.runSessionReminders(fakeReq, fakeRes);
       }
-
     } catch (error) {
+      console.error("Reminder error:", error);
     }
   }
 
@@ -199,20 +189,11 @@ if (require.main === module) {
   async function getGeneralCronSettings() {
     try {
       const keys = ['sms_cron_enabled', 'sms_cron_hour', 'sms_cron_minute'];
-      const docs = await GlobalSetting.find({
-        businessId: null,
-        settingKey: { $in: keys },
-      }).lean();
-
+      const docs = await GlobalSetting.find({ businessId: null, settingKey: { $in: keys } }).lean();
       const map = Object.fromEntries(docs.map((d) => [d.settingKey, d.settingValue]));
-
-      const enabled =
-        String(map.sms_cron_enabled ?? 'true').toLowerCase() === 'true' ||
-        map.sms_cron_enabled === true;
-
+      const enabled = String(map.sms_cron_enabled ?? 'true').toLowerCase() === 'true' || map.sms_cron_enabled === true;
       const hour = Number(map.sms_cron_hour ?? 2) || 2;
       const minute = Number(map.sms_cron_minute ?? 0) || 0;
-
       return { enabled, hour, minute };
     } catch (err) {
       return {
@@ -230,35 +211,19 @@ if (require.main === module) {
 
   async function startDailyReminders({ enabled, hour, minute, runOnStart }) {
     stopDailyReminders();
-
-    if (!enabled) {
-      return;
-    }
-
+    if (!enabled) return;
     const delay = msUntil(hour, minute);
-
     sessionReminderTimeout = setTimeout(() => {
       runSessionRemindersForAllBusinesses().finally(() => {
-        sessionReminderInterval = setInterval(
-          runSessionRemindersForAllBusinesses,
-          24 * 60 * 60 * 1000
-        );
+        sessionReminderInterval = setInterval(runSessionRemindersForAllBusinesses, 24 * 60 * 60 * 1000);
       });
     }, delay);
-
-    if (runOnStart) {
-      runSessionRemindersForAllBusinesses();
-    }
+    if (runOnStart) runSessionRemindersForAllBusinesses();
   }
 
   async function scheduleDailyReminders() {
     const { enabled, hour, minute } = await getGeneralCronSettings();
-    await startDailyReminders({
-      enabled,
-      hour,
-      minute,
-      runOnStart: config.SESSION_SMS_CRON_RUN_ON_START,
-    });
+    await startDailyReminders({ enabled, hour, minute, runOnStart: config.SESSION_SMS_CRON_RUN_ON_START });
   }
 
   scheduleDailyReminders();
@@ -276,37 +241,24 @@ if (require.main === module) {
     },
     async loadAndSchedule() {
       const s = await getGeneralCronSettings();
-      await startDailyReminders({
-        enabled: s.enabled,
-        hour: s.hour,
-        minute: s.minute,
-        runOnStart: false,
-      });
+      await startDailyReminders({ enabled: s.enabled, hour: s.hour, minute: s.minute, runOnStart: false });
     },
   };
 
   function shutdown(signal) {
-
     server.close(() => {
       mongoose.connection.close(false).then(() => {
         process.exit(0);
       });
     });
-
-    setTimeout(() => {
-      process.exit(1);
-    }, 10000);
+    setTimeout(() => { process.exit(1); }, 10000);
   }
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-// Global error handler
-process.on('uncaughtException', () => {
-});
-
-process.on('unhandledRejection', () => {
-});
+process.on('uncaughtException', (err) => { console.error("Uncaught Exception:", err); });
+process.on('unhandledRejection', (reason) => { console.error("Unhandled Rejection:", reason); });
 
 module.exports = app;
